@@ -7,3 +7,4 @@ kitti_data
 models
 *.sh
 .vscode/
+*.ipynb_checkpoints/

@@ -20,6 +20,13 @@ def DSSIM(I_x, I_y,
     denom = (mu_x ** 2 + mu_y ** 2 + C1) * (sigma_x + sigma_y + C2)
     return np.clip((1 - numer/denom)/2, a_min=0, a_max=1)
 
-def loss(alpha=0.85):
-    """calculate the loss, where alpha is the weight of the DSSIM term"""
-    pass
+def loss_func():
+    """return the loss as a function"""
+    def loss(tgt_patch, src_patch, alpha=0.85):
+        assert tgt_patch.shape == src_patch.shape  
+        patch_size, _, _ = tgt_patch.shape
+        ofs = (patch_size-1) // 2
+        L1 = np.mean(np.abs(tgt_patch[ofs, ofs] - src_patch[ofs, ofs]))
+        dssim = DSSIM(tgt_patch, src_patch)
+        return (1-alpha) * L1 + alpha * dssim
+    return loss
