@@ -33,6 +33,32 @@ def loss_func():
         return (1-alpha) * L1 + alpha * dssim
     return loss
 
+def loss_func_torch():
+    def loss(tgt_patch, src_patch, alpha=0.85):
+        assert tgt_patch.shape == src_patch.shape  
+        patch_size, _, _ = tgt_patch.shape
+        ofs = (patch_size-1) // 2
+        L1 = torch.mean(torch.abs(tgt_patch[ofs, ofs] - src_patch[ofs, ofs]))
+        dssim = ssim_patch(tgt_patch, src_patch)
+        return (1-alpha) * L1 + alpha * dssim
+    return loss
+
+def compute_homography_torch(loc, K, pose, depth, normal):
+    x, y = loc
+    z, n = depth, normal
+    K = K[:3, :3]
+    inv_K = torch.inverse(K)
+    
+    R, t = pose[:3, :3], pose[:3, 3].reshape((3, 1))
+    loc = to_homog(loc)
+    pts_3d = torch.matmul(inv_K, loc) * z
+    
+    d = -1 * torch.matmul(n.transpose(0, 1), pts_3d)
+    H = R - torch.ger(t ,(n.flatten() / d))
+    H = torch.matmul(K, H)
+    H = torch.matmul(H, inv_K)
+    return H
+    
 def patch_center_loss(tgt_img, src_img, K, cam_coords,
                       pred_pose, pred_depth, pred_norm,
                       patch_size=7, dilation=1):

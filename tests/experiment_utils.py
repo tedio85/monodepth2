@@ -18,8 +18,14 @@ from rotm2euler import isRotationMatrix, rotationMatrixToEulerAngles, eulerAngle
 def to_homog(x):
     return np.vstack([x, [1]])
 
+def to_homog_torch(x):
+    return torch.stack([x, [1]], dim=0)
+
 def de_homog(x):
     return x[:2, 0, np.newaxis] / x[2, 0]
+
+def de_homog_torch(x):
+    return x[:2, 0].unsqueeze(dim=-1) / x[2, 0]
 
 ######################### Pose-related functions ####################
 
@@ -179,6 +185,46 @@ def bilinear_pt(coord, src):
 
     return ret
 
+def bilinear_pt_torch(coord, src):
+    """Given a single point coordinate of shape [3, 1], bilinear
+        sample image intensity on the source image"""
+    
+    H, W, _ = src.shape
+    x, y = coord[0, 0], coord[1, 0]
+    x0 = torch.floor(x)
+    x1 = x0 + 1
+    y0 = torch.floor(y)
+    y1 = y0 + 1
+
+    x0 = torch.clamp(x0, 0, W)
+    x1 = torch.clamp(x1, 0, W)
+    y0 = torch.clamp(y0, 0, H)
+    y1 = torch.clamp(y1, 0, H)
+
+    wt_x0 = x1 - x
+    wt_x1 = x - x0
+    wt_y0 = y1 - y
+    wt_y1 = y - y0
+    #print(wt_x0, wt_x1, wt_y0, wt_y1)
+
+    w00 = wt_x0 * wt_y0
+    w01 = wt_x0 * wt_y1
+    w10 = wt_x1 * wt_y0
+    w11 = wt_x1 * wt_y1
+    # print(w00, w01, w10, w11)
+
+    # check if coordinates are in range
+    ret = 0
+    if 0<=x0 and x1<W and 0<=y0 and y1<H:
+
+        i00 = src[int(y0), int(x0)]
+        i01 = src[int(y1), int(x0)]
+        i10 = src[int(y0), int(x1)]
+        i11 = src[int(y1), int(x1)]
+        ret = w00 * i00 + w01 * i01 + w10 * i10 + w11 * i11
+
+    return ret
+
 def warp_location(pt, intrinsics, rel_pose, depth):
     """Obtain the corresponding source coordinate for a given target coordinate"""
     # create 4x4 intrinsics
@@ -191,6 +237,20 @@ def warp_location(pt, intrinsics, rel_pose, depth):
     cam_coord = to_homog(cam_coord)  # [4, 1]
     ps =(K @ rel_pose @ cam_coord)  # [4, 1]
     ps = de_homog(ps)               # [2, 1]
+    return ps
+
+def warp_location_torch(pt, intrinsics, rel_pose, depth):
+    # create 4x4 intrinsics
+    K = torch.zeros([4, 4]).cuda()              # 4x4
+    K[:3, :3] = intrinsics
+    K[3, 3] = 1
+    inv_K = torch.inverse(intrinsics) # 3x3
+
+    cam_coord = depth * torch.matmul(inv_K, to_homog_torch(pt)) # [3, 1]
+    cam_coord = to_homog(cam_coord)  # [4, 1]
+    cam_coord = torch.matmul(rel_pose, cam_coord)
+    ps = torch.matmul(K, cam_coord)  # [4, 1]
+    ps = de_homog_torch(ps)          # [2, 1]
     return ps
 
 #################### File reading utilities #######################
