@@ -1,6 +1,7 @@
 import os
 import sys
 sys.path.insert(0, '../')
+sys.path.insert(0, '../../')
 import random
 import numpy as np
 import torch
@@ -15,9 +16,9 @@ from layers import *
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import collections as mc
+import pdb
 
-
-def read_pair_list(path):
+def read_pair_list(pair_path):
     f = open(pair_path)
     lines = f.readlines()
 
@@ -103,7 +104,7 @@ def load_data(record, root, img_width=320, img_height=240):
         image = unplot_normal(image)
         return image, mask
     
-    scn, tgt_id, src_id = record.split()
+    scn, tgt_id, src_id = record
     
     data = dict()
     data['tgt'], data['src'] = load_image(root['data'], scn, tgt_id)
@@ -144,26 +145,41 @@ def data_to_device_tensor(data):
             value = np.expand_dims(value, -1)
         if k in imgs:
             value = value.transpose((0, 3, 1, 2))
-        value = torch.from_numpy(value)
+        value = torch.from_numpy(value).cuda()
         device_dict[k] = value
 
     return device_dict
 
+def enlarge_K(K):
+    nK = torch.zeros([4, 4]).cuda()
+    nK[3, 3] = 1
+    nK[:3, :3] = K
+    return nK
+
+def get_ofs(patch_size, dilation=1):
+    psize_eff = 1 + dilation * (patch_size - 1) # effective patch size
+    ofs = (psize_eff - 1) // 2                  # offset
+    return ofs
+
 def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
+    batch, _, height, width = frame['tgt'].shape 
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
     gt_depth = frame['depth']
-
+    inv_K = torch.inverse(frame['K'])
+    K_4x4 = enlarge_K(frame['K'])
+    
     ret_min = defaultdict(list)
     ret_curve = dict()
     for patch_size in psize_list:
+        print('Square Patch of Size {}'.format(patch_size))
+        ofs = get_ofs(patch_size, dilation=1)
         loss_maps = []
-        for eps in eps_lst:
+        for i, eps in enumerate(eps_lst):
             depth = gt_depth + eps
 
             # warp
-            inv_K = torch.inverse(frame['K'])
             cam_points = layers['backproject_depth'](depth, inv_K)
-            pix_coords = layers['project_3d'](cam_points, frame['K'], frame['pose'])
+            pix_coords = layers['project_3d'](cam_points, K_4x4, frame['pose'])
             warped = F.grid_sample(frame['src'], pix_coords, padding_mode="border")
 
             # unfold
@@ -172,84 +188,96 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
             warped_patch = warped_patch.view(batch, 3, patch_size, patch_size, height-2*ofs, width-2*ofs)
             warped_patch = warped_patch.permute(0, 1, 4, 5, 2, 3)
 
-            tgt_patch = layers(d_key)(frame['tgt'])
+            tgt_patch = layers[d_key](frame['tgt'])
             tgt_patch = tgt_patch.view(batch, 3, patch_size, patch_size, height-2*ofs, width-2*ofs)
             tgt_patch = tgt_patch.permute(0, 1, 4, 5, 2, 3)
 
             # calculate loss 
-            ofs = (frame['tgt'].shape[2] - tgt_patch.shape[2]) // 2
             abs_diff = torch.abs(frame['tgt'] - warped)
             l1_loss = abs_diff.mean(1, True)
-            l1_loss = l1_loss[:, :, ofs:-ofs, ofs:-ofs]
             if patch_size == 1:
                 loss = l1_loss
             else:
+                l1_loss = l1_loss[:, :, ofs:-ofs, ofs:-ofs]
                 loss = 0.15 * l1_loss + 0.85 * ssim_patch(tgt_patch, warped_patch) # [B, 1, H, W]
-            
-            loss = loss * frame['mask']
+            if ofs == 0:
+                loss = loss * frame['mask']
+            else:
+                loss = loss * frame['mask'][:, :, ofs:-ofs, ofs:-ofs]
 
             # stack loss 
             loss_maps.append(loss)
 
         # take minimums and corresponding eps
         loss_stack = torch.cat(loss_maps, dim=1) # [1, len(eps_lst), H, W]
-        min_loss, min_idx = torch.min(loss, dim=1) # both [1, H, W]
+        min_loss, min_idx = torch.min(loss_stack, dim=1) # both [1, H, W]
         min_loss = min_loss.squeeze(dim=0) # [H, W]
         min_idx = min_idx.squeeze(dim=0)   # [H, W]
 
         # select sampled locations
         curve = np.zeros([len(eps_lst)])
-        for y, x in samples:
+        for _, _, y, x in samples:
             min_eps = eps_lst[min_idx[y, x]]
-            min_loss = min_loss[y, x]
-            result_frame = ((x, y), min_eps, min_loss)
+            min_loss_value = min_loss[y, x]
+            result_frame = ((x, y), min_eps, min_loss_value)
             ret_min[patch_size].append(result_frame)
-            curve += loss_stack[:, y, x].numpy()
-        ret_curve[patch_size] = curve
+            curve += loss_stack[0, :, y, x].cpu().numpy()
+        ret_curve[patch_size] = curve/samples.shape[0]
+        
+        # clear unused variables
+        del loss_maps
 
     return ret_min, ret_curve
         
 def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
     gt_depth = frame['depth']
+    inv_K = torch.inverse(frame['K'])
 
     ret_min = defaultdict(list)
     ret_curve = dict()
-    for patch_size in psize_list:
+    for patch_size in psize_list[1:]: # skip patch size of 1
+        print('Deformed Patch of Size {}'.format(patch_size))
+        ofs = get_ofs(patch_size, dilation=1)
         loss_maps = []
         for eps in eps_lst:
             depth = gt_depth + eps
-            inv_K = torch.inverse(frame['K'])
             cam_points = layers['backproject_depth'](depth, inv_K)
-
-            loss = patch_center_loss(
-                        frame['tgt'],
-                        frame['src'],
-                        frame['K'],
-                        cam_points,
-                        frame['pose'],
-                        depth,
-                        frame['norm'],
-                        patch_size=patch_size,
-                        dilation=1)
-            loss = loss * frame['mask']
+            
+            loss, _ = patch_center_loss(
+                            frame['tgt'],
+                            frame['src'],
+                            frame['K'],
+                            cam_points,
+                            frame['pose'],
+                            depth,
+                            frame['norm'],
+                            patch_size=patch_size,
+                            dilation=1)
+            if ofs == 0:
+                loss = loss * frame['mask']
+            else:
+                loss = loss * frame['mask'][:, :, ofs:-ofs, ofs:-ofs]
             loss_maps.append(loss)
 
         # take minimums and corresponding eps
         loss_stack = torch.cat(loss_maps, dim=1) # [1, len(eps_lst), H, W]
-        min_loss, min_idx = torch.min(loss, dim=1) # both [1, H, W]
+        min_loss, min_idx = torch.min(loss_stack, dim=1) # both [1, H, W]
         min_loss = min_loss.squeeze(dim=0) # [H, W]
         min_idx = min_idx.squeeze(dim=0)   # [H, W]
 
         # select sampled locations
         curve = np.zeros([len(eps_lst)])
-        for y, x in samples:
+        for _, _, y, x in samples:
             min_eps = eps_lst[min_idx[y, x]]
-            min_loss = min_loss[y, x]
-            result_frame = ((x, y), norm[0, :, y, x], min_eps, min_loss)
+            min_loss_value = min_loss[y, x]
+            result_frame = ((x, y), frame['norm'][0, :, y, x], min_eps, min_loss_value)
             ret_min[patch_size].append(result_frame)
-            curve += loss_stack[:, y, x].numpy()
-        ret_curve[patch_size] = curve
+            curve += loss_stack[0, :, y, x].cpu().numpy()
+        ret_curve[patch_size] = curve/samples.shape[0]
+        
+        # clear unused variables
+        del loss_maps
 
     return ret_min, ret_curve
 
@@ -260,14 +288,22 @@ def run_test(frame_t,
              psize_list,
              gt_deviation, step, n_samples=100):
     # randomly sample pixels in the valid region
+    psize_max = psize_list[-1]
+    ofs_max = get_ofs(psize_max, dilation=1)
+    frame['mask'][:, :, 0:ofs_max, :] = 0 # up
+    frame['mask'][:, :, -ofs_max:, :] = 0 # down
+    frame['mask'][:, :, :, 0:ofs_max] = 0 # left
+    frame['mask'][:, :, :, -ofs_max:] = 0 # right
+    
     valid_idxs = frame['mask'].nonzero()
     perm = torch.randperm(valid_idxs.size(0))
     selected_idxs = perm[:n_samples]
     samples = valid_idxs[selected_idxs]
 
     # generate loss curve for all samples with square/deformed patch
-    r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list gt_deviation, step)
-    r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list gt_deviation, step)
+    with torch.no_grad():
+        r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
+        r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
 
     # dump r_x_min containing (pixel location, absolute depth error) 
     dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve)
@@ -279,7 +315,7 @@ def run_test(frame_t,
     return agg_results # return updated aggregated results
 
 def dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve):
-    scene, tgt, src = frame_t.split()
+    scene, tgt, src = frame_t
     file_path = os.path.join(dump_root, scene, '{}_{}.txt'.format(tgt, src))
     
     record_dict = dict()
@@ -312,11 +348,11 @@ if __name__ == '__main__':
 
     # define layers
     layers = dict()
-    layers['backproject_depth'] = BackprojectDepth(1, h, w).cuda()
-    layers['project_3d'] = Project3D(1, h, w).cuda()
+    layers['backproject_depth'] = BackprojectDepth(1, img_h, img_w).cuda()
+    layers['project_3d'] = Project3D(1, img_h, img_w).cuda()
     for patch_size in psize_list:
         layers['unfold_{}'.format(patch_size)] = \
-            torch.nn.Unfold(kernel_size=(patch_size, patch_size), dilation=1)
+            torch.nn.Unfold(kernel_size=(patch_size, patch_size), dilation=1).cuda()
 
     agg_results = dict()
     agg_results['square'] = np.zeros([len(psize_list), len(eps_lst)])
@@ -324,7 +360,7 @@ if __name__ == '__main__':
 
     frame_list = read_pair_list(list_path)
     for frame_t in frame_list:
-        frame = load_data(data_root, gt_root, pose_root, img_w, img_h, frame_t)
+        frame = load_data(frame_t, root, img_w, img_h)
         frame = data_to_device_tensor(frame)
         agg_results = run_test(frame_t,
                                frame,
