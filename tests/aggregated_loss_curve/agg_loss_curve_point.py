@@ -1,13 +1,15 @@
 import os
 import sys
 sys.path.insert(0, '../')
+sys.path.insert(0, '../../')
 import random
+import time
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.multiprocessing import Pool, Process, set_start_method
 
 from collections import defaultdict
-from multiprocessing import Pool
 from rotm2euler import *
 from test_utils import *
 from experiment_utils import *
@@ -209,57 +211,65 @@ def warp_patch_homography_torch(pt_ctr, K, pose, depth, normal, src, patch_size=
             patch_img[y, x] = bilinear_pt_torch(ps[:, i].unsqueeze(-1), src)
     return ps, patch_img 
 
-def test_single_pixel_square(pt, frame, layers, patch_size, loss_criterion, gt_deviation, step):
+def test_single_pixel_square(pt, frame, layers, patch_size, gt_deviation, step):
     """For fixed pixel location and patch size, test all inverse depth values with square patch"""
-    _, _, y, x = pt
+    if print_msg:
+        print('{}, {} worker started'.format(pt, patch_size), flush=True)
+    y, x = pt
     n_mid = (patch_size**2 - 1)//2
     ofs = get_ofs(patch_size, dilation=1)
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
-    gt_inv_depth = 1 / (frame['depth'] + 1e-6)
-    gt_inv_depth = torch.clamp(inv_depth, 0, 10) 
+    gt_inv_depth = 1 / (frame['depth'][0, 0, y, x] + 1e-6)
+    gt_inv_depth = torch.clamp(gt_inv_depth, 0, 10) 
+    tgt = frame['tgt'].permute([0, 2, 3, 1]).squeeze(dim=0)
+    tgt_patch = get_tgt_patch(pt, tgt, patch_size).squeeze() # single-pixel or patch
 
     loss_values = np.zeros_like(eps_lst)
     for i, eps in enumerate(eps_lst):
         inv_depth = gt_inv_depth + eps
         depth = 1 / inv_depth
-        tgt_patch = get_tgt_patch(pt, tgt, patch_size) # single-pixel or patch
+        
         if patch_size == 1:
-            ps = warp_location_torch(pt, frame['K'], frame['pose'], depth)
-            src_patch = bilinear_pt_torch(ps[:, 0].unsqueeze(-1), frame['src']) # single-pixel
+            ps = warp_location_torch(pt.float(), frame['K'], frame['pose'], depth)
+            src_patch = bilinear_pt_torch(ps[:, 0].unsqueeze(-1), frame['src'].squeeze(0)) # single-pixel
             diff = torch.mean(torch.abs(tgt_patch - src_patch))
         else:
-            src_coords, src_patch = warp_patch_torch(pt, depth, frame['K'], frame['pose'], frame['src'], patch_size)
+            src_coords, src_patch = warp_patch_torch(pt.float(), depth, frame['K'], frame['pose'], frame['src'], patch_size)
             ps = src_coords[:, n_mid].unsqueeze(-1)
-            diff = loss_criterion(tgt_patch, src_patch)
+            diff = experiment_loss_torch(tgt_patch, src_patch)
 
         loss_values[i] = diff.cpu().numpy()
 
     min_idx = np.argmin(loss_values)
     min_eps, min_loss = eps_lst[min_idx], loss_values[min_idx]
     result_t = ((x, y), patch_size, gt_inv_depth, min_eps, min_loss)
+    if print_msg:
+        print('{}, {} worker completed'.format(pt, patch_size), flush=True)
     return (result_t, loss_values)
 
-def test_single_pixel_deform(pt, frame, layers, patch_size, loss_criterion, gt_deviation, step):
+def test_single_pixel_deform(pt, frame, layers, patch_size, gt_deviation, step):
     """For fixed pixel location and patch size, test all inverse depth values with deformed patch"""
-    _, _, y, x = pt
+    y, x = pt
     n_mid = (patch_size**2 - 1)//2
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
-    gt_inv_depth = 1 / (frame['depth'] + 1e-6)
-    gt_inv_depth = torch.clamp(inv_depth, 0, 10) 
+    gt_inv_depth = 1 / (frame['depth'][0, 0, y, x] + 1e-6)
+    gt_inv_depth = torch.clamp(gt_inv_depth, 0, 10) 
     gt_normal = frame['norm'][y, x]
+    tgt = frame['tgt'].permute([0, 2, 3, 1]).squeeze(dim=0)
+    tgt_patch = get_tgt_patch(pt, tgt, patch_size).squeeze() # single-pixel or patch
 
     loss_values = np.zeros_like(eps_lst)
     for i, eps in enumerate(eps_lst):
         inv_depth = gt_inv_depth + eps
         depth = 1 / inv_depth
-        tgt_patch = get_tgt_patch(pt, tgt, patch_size) # single-pixel or patch
+        
         if patch_size == 1:
-            ps = warp_location_torch(pt, frame['K'], frame['pose'], depth)
-            src_patch = bilinear_pt_torch(ps[:, 0].unsqueeze(-1), frame['src']) # single-pixel
+            ps = warp_location_torch(pt.float(), frame['K'], frame['pose'], depth)
+            src_patch = bilinear_pt_torch(ps[:, 0].unsqueeze(-1), frame['src'].squeeze(0)) # single-pixel
             diff = torch.mean(torch.abs(tgt_patch - src_patch))
         else:
             src_coords, src_patch = warp_patch_homography_torch(
-                                        pt,
+                                        pt.float(),
                                         frame['K'],
                                         frame['pose'],
                                         depth,
@@ -267,7 +277,7 @@ def test_single_pixel_deform(pt, frame, layers, patch_size, loss_criterion, gt_d
                                         frame['src'],
                                         patch_size)
             ps = src_coords[:, n_mid].squeeze(-1)
-            diff = loss_criterion(tgt_patch, src_patch)
+            diff = experiment_loss_torch(tgt_patch, src_patch)
 
         loss_values[i] = diff.cpu().numpy()
     
@@ -279,19 +289,26 @@ def test_single_pixel_deform(pt, frame, layers, patch_size, loss_criterion, gt_d
 def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):    
     ret_min = defaultdict(list)
     ret_curve = dict()
-    loss_func = loss_func_torch()
 
-    with Pool(16) as p:
+    with Pool(32) as p:
         for patch_size in psize_list:
+            if print_msg:
+                print('\t Square patch of size {}'.format(patch_size))
             # prepare subprocess args
-            args = []
+            #args = []
+            results = []
             for pt in samples: # pt: [0, 0, y, x]
-                pt = pt[2:]
-                tup = (pt, frame, layers, patch_size, loss_func, gt_deviation, step)
-                args.append(tup)
+                pt = pt[2:].unsqueeze(-1)
+                tup = (pt, frame, layers, patch_size, gt_deviation, step)
+                r = test_single_pixel_square(*tup)
+                #args.append(tup)
+                results.append(r)
+                
 
             # get results
-            results = p.starmap(test_single_pixel_square, args)
+#             results = p.starmap(test_single_pixel_square, args)
+#             if print_msg:
+#                 print('\t Subprocess completed')
             
             # aggregate results
             curve = np.zeros([len(eps_lst)])
@@ -306,17 +323,21 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
     ret_min = defaultdict(list)
     ret_curve = dict()
 
-    with Pool(16) as p:
+    with Pool(32) as p:
         for patch_size in psize_list:
+            if print_msg:
+                print('\t Deformed patch of size {}'.format(patch_size))
             # prepare subprocess args
             args = []
             for pt in samples: # pt: [0, 0, y, x]
-                pt = pt[2:]
-                tup = (pt, frame, layers, patch_size, loss_func, gt_deviation, step)
+                pt = pt[2:].unsqueeze(-1)
+                tup = (pt, frame, layers, patch_size, gt_deviation, step)
                 args.append(tup)
 
             # get results
             results = p.starmap(test_single_pixel_deform, args)
+            if print_msg:
+                print('\t Subprocess completed')
             
             # aggregate results
             curve = np.zeros([len(eps_lst)])
@@ -385,6 +406,8 @@ if __name__ == '__main__':
     step = 1e-4
     psize_list = [1] + [2**i+1 for i in range(1, 7)] # [1, 3, 5, 9, 17, 33, 65]
     eps_lst = np.arange(-deviation, deviation, step)
+    global print_msg 
+    print_msg = True
 
     # set random seed
     seed = 732
@@ -392,6 +415,12 @@ if __name__ == '__main__':
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    # torch multiprocessing
+    try:
+         set_start_method('forkserver')
+    except RuntimeError:
+        pass
+    
     # define layers
     layers = dict()
     layers['backproject_depth'] = BackprojectDepth(1, img_h, img_w).cuda()
@@ -399,13 +428,16 @@ if __name__ == '__main__':
     for patch_size in psize_list:
         layers['unfold_{}'.format(patch_size)] = \
             torch.nn.Unfold(kernel_size=(patch_size, patch_size), dilation=1).cuda()
-
+    
+    # initialize aggregated results
     agg_results = dict()
     agg_results['square'] = np.zeros([len(psize_list), len(eps_lst)])
     agg_results['deform'] = np.zeros([len(psize_list), len(eps_lst)])
 
     frame_list = read_pair_list(list_path)
-    for frame_t in frame_list:
+    for i, frame_t in enumerate(frame_list):
+        tic = time.time()
+        print('Running frame {}/{}'.format(i+1, len(frame_list)))
         frame = load_data(frame_t, root, img_w, img_h)
         frame = data_to_device_tensor(frame)
         agg_results = run_test(frame_t,
@@ -414,4 +446,6 @@ if __name__ == '__main__':
                                layers,
                                psize_list,
                                deviation, step, n_samples=100)
+        toc = time.time()
+        print('{}s/it'.format(toc-tic))
         

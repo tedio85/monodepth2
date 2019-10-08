@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import torch
 import imageio
 import cv2
 import copy
@@ -12,6 +13,8 @@ sys.path.insert(0, '/viscompfs/users/sawang/PatchSfM/src/')
 from utils import meshgrid, pixel2cam, cam2pixel, bilinear_sampler
 from rotm2euler import isRotationMatrix, rotationMatrixToEulerAngles, eulerAnglesToRotationMatrix
 
+import pdb
+
 
 ######################### Basic functions ###########################
 
@@ -19,7 +22,10 @@ def to_homog(x):
     return np.vstack([x, [1]])
 
 def to_homog_torch(x):
-    return torch.stack([x, [1]], dim=0)
+    ones = torch.ones([1, x.shape[1]])
+    if x.is_cuda:
+        ones = ones.cuda()
+    return torch.cat([x, ones], dim=0)
 
 def de_homog(x):
     return x[:2, 0, np.newaxis] / x[2, 0]
@@ -188,7 +194,7 @@ def bilinear_pt(coord, src):
 def bilinear_pt_torch(coord, src):
     """Given a single point coordinate of shape [3, 1], bilinear
         sample image intensity on the source image"""
-    
+    src = src.permute(1, 2, 0) # [3, H, W] -> # [H, W, 3]
     H, W, _ = src.shape
     x, y = coord[0, 0], coord[1, 0]
     x0 = torch.floor(x)
@@ -244,10 +250,11 @@ def warp_location_torch(pt, intrinsics, rel_pose, depth):
     K = torch.zeros([4, 4]).cuda()              # 4x4
     K[:3, :3] = intrinsics
     K[3, 3] = 1
-    inv_K = torch.inverse(intrinsics) # 3x3
-
+    inv_K = torch.inverse(K[:3, :3]) # 3x3
+    rel_pose = rel_pose.squeeze(dim=0) # [1, 4, 4] -> [4, 4]
+    
     cam_coord = depth * torch.matmul(inv_K, to_homog_torch(pt)) # [3, 1]
-    cam_coord = to_homog(cam_coord)  # [4, 1]
+    cam_coord = to_homog_torch(cam_coord)  # [4, 1]
     cam_coord = torch.matmul(rel_pose, cam_coord)
     ps = torch.matmul(K, cam_coord)  # [4, 1]
     ps = de_homog_torch(ps)          # [2, 1]

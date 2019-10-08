@@ -43,6 +43,14 @@ def loss_func_torch():
         return (1-alpha) * L1 + alpha * dssim
     return loss
 
+def experiment_loss_torch(tgt_patch, src_patch, alpha=0.85):
+    assert tgt_patch.shape == src_patch.shape  
+    patch_size, _, _ = tgt_patch.shape
+    ofs = (patch_size-1) // 2
+    L1 = torch.mean(torch.abs(tgt_patch[ofs, ofs] - src_patch[ofs, ofs]))
+    dssim = ssim_patch(tgt_patch, src_patch)
+    return (1-alpha) * L1 + alpha * dssim
+
 def compute_homography_torch(loc, K, pose, depth, normal):
     x, y = loc
     z, n = depth, normal
