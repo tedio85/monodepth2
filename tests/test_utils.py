@@ -178,14 +178,15 @@ def sampled_patch_center_loss(samples, tgt_img, src_img, K, cam_coords,
         patch_size: patch size, integer (default = 7)
         dilation: dilation factor for patch (default = 1)
     Output:
-        
+        patch_intensities: sampled intensities for each patch [1, 3, n_samples, patch_size, patch_size]
+        patch_coords: sampled coordinates [B, n_samples, size*patch_size, 2]
     """
     batch, _, height, width = pred_norm.shape
     n_samples = samples.shape[0]
     cam_coords = cam_coords[:, :-1, :].view(batch, 3, height, width) # [B, 3, H, W]
     K = K[:, :3, :3] 
     psize_eff = 1 + dilation * (patch_size - 1) # effective patch size
-    offset = (psize_eff - 1) // 2       
+    ofs = (psize_eff - 1) // 2       
     
     # compute homography for every pixel location
     H = calculate_homography(pred_pose, K, pred_norm, cam_coords) #[B, 3, 3, H, W]
@@ -193,28 +194,37 @@ def sampled_patch_center_loss(samples, tgt_img, src_img, K, cam_coords,
     # gather H with python-style indexing
     H = H[:, :, :, samples]   # [B, 3, 3, n_samples]
     H = H.permute(0, 3, 1, 2) # [B, n_samples, 3, 3]
+    H = H.unsqueeze(2) # [B, n_samples, 1, 3, 3]
     
-
     # cam_coords = (K_inv @ pts * d) / d 
     cam_coords = cam_coords / pred_depth # [B, 3, H, W]
 
-    # unfold all cam_coords
-    unfold = torch.nn.Unfold(kernel_size=(patch_size, patch_size), dilation=dilation)
-    patch_coords = unfold(cam_coords) # # [B, 3*psize*psize, (H-2*offset)*(W-2*offset)]
-
-    # gather patch_coords at sampled locations
-    samples = samples - offset # adjust according to offset
-    patch_coords = patch_coords[:, :, samples] # [B, 3*psize*psize, n_samples]
-    patch_coords = patch_coords.view(1, 3, patch_size, patch_size, n_samples) # THIS STEP NEEDS TO BE CHECKED
-    patch_coords = patch_coords.permute(0, 2, 3, 4, 1)
+    # unfold cam_coords at sampled locations
+    patch_coords = []
+    for y, x in samples:
+        if ofs>=0:
+            coords = cam_coords[:, :, y-ofs:y+ofs+1, x-ofs:x+ofs+1] # [B, 3, patch_size, patch_size]
+            patch_coords.append(coords)
+    patch_coords = torch.stack(patch_coords, dim=-1) # [B, 3, patch_size, patch_size, n_samples]
+    patch_coords = patch_coords.permute(0, 4, 2, 3, 1) # [B, n_samples, patch_size, patch_size, 3]
+    patch_coords = patch_coords.view(batch, n_samples, -1, 3) # [B, n_samples, patch_size*patch_size, 3]
+    patch_coords = patch_coords.unsqueeze(-1) # [B, n_samples, patch_size*patch_size, 3, 1]
+        
 
     # matmul with the last two dimensions aligned
-    patch_coords = torch.matmul(H, patch_coords) # [B, n_samples, 3, 1]
+    patch_coords = torch.matmul(H, patch_coords) # [B, n_samples, size*patch_size, 3, 1]
+    patch_coords = patch_coords.squeeze(-1) # [B, n_samples, size*patch_size, 3]
+
 
     # dehomogenize
-    patch_coords = patch_coords[:, :, :2, :] / (patch_coords[:, :, 2:, :] + 1e-10) # [B, n_samples, 2, 1]
+    patch_coords = patch_coords[:, :, :, :2] / (patch_coords[:, :, :, 2:] + 1e-10) # [B, n_samples, size*patch_size, 2]
     
     # grid sample
+    patch_intensities = F.grid_sample(src_img, patch_coords, padding_mode='border') # [B, 3, n_samples, patch_size*patch_size]
+    patch_intensities = patch_intensities.view(batch, 3, n_samples, patch_size, patch_size)
+
+    return patch_intensities, patch_coords
+
 
 
     
