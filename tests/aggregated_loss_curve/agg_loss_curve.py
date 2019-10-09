@@ -217,7 +217,7 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
         curve = np.zeros([len(eps_lst)])
         for idx, _, _, y, x in enumerate(samples):
             min_eps = eps_lst[min_idx[idx]]
-            min_loss_value = min_loss[idx]]
+            min_loss_value = min_loss[idx]
             result_frame = ((x, y), min_eps, min_loss_value)
             ret_min[patch_size].append(result_frame)
             curve += loss_stack[0, :, y, x].cpu().numpy()
@@ -240,7 +240,7 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
         ofs = get_ofs(patch_size, dilation=1)
 
         # shape [1, 3, n_samples, patch_size, patch_size]
-        tgt_patches = sampled_intensity(samples, frame['tgt'], patch_size)
+        tgt_patches = sampled_intensity(samples[:, 2:], frame['tgt'], patch_size)
         # shape [1, 3, 1, n_samples, patch_size, patch_size]
         tgt_patches = tgt_patches.unsqueeze(2)
 
@@ -248,10 +248,10 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
         for eps in eps_lst:
             depth = gt_depth + eps
             cam_points = layers['backproject_depth'](depth, inv_K)
-
+            print('eps: {}'.format(eps))
             # shape [1, 3, n_samples, patch_size, patch_size]
             src_patches, src_coords = sampled_patch_center_loss(
-                                        samples,
+                                        samples[:, 2:],
                                         frame['tgt'],
                                         frame['src'],
                                         frame['K'],
@@ -265,8 +265,9 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
             src_patches = src_patches.unsqueeze(2)
                         
             # calculate loss
-            ctr_diff = tgt_patches[:, :, :, ofs, ofs] - src_patches[:, :, :, ofs, ofs]
-            ctr_l1_loss = torch.mean(torch.abs(ctr_diff), dim=1, keepdim=True) # [B, 1, n_samples]
+            ctr_diff = tgt_patches[:, :, :, :, ofs, ofs] - src_patches[:, :, :, :, ofs, ofs]
+            ctr_l1_loss = torch.mean(torch.abs(ctr_diff), dim=1, keepdim=True) # [B, 1, 1, n_samples]
+            ctr_l1_loss = ctr_l1_loss.squeeze(2)
             loss = 0.15 * ctr_l1_loss + 0.85 * ssim_patch(tgt_patches, src_patches).squeeze(2)
             loss_maps.append(loss)
 
@@ -278,7 +279,7 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
 
         # select sampled locations
         curve = np.zeros([len(eps_lst)])
-        for i, y, x in enumerate(samples):
+        for i, (y, x) in enumerate(samples[:, 2:]):
             min_eps = eps_lst[i]
             min_loss_value = min_loss[i]
             result_frame = ((x, y), frame['norm'][0, :, y, x], min_eps, min_loss_value)
@@ -312,7 +313,7 @@ def run_test(frame_t,
 
     # generate loss curve for all samples with square/deformed patch
     with torch.no_grad():
-        r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
+        #r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
         r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
 
     # dump r_x_min containing (pixel location, absolute depth error) 

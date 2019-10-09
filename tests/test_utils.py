@@ -3,6 +3,8 @@ import torch
 import torch.nn.functional as F
 from normal_loss import *
 
+import pdb
+
 def barron_loss(x, alpha=1, c=0.01):
     t1 = np.abs(alpha-2) / alpha # term 1
     base = ((x/c)**2) / np.abs(alpha-2) + 1
@@ -165,7 +167,7 @@ def form_meshgrid(samples, patch_size, dilation=1):
     mesh = mesh.unsqueeze(0).unsqueeze(0) # [1, 1, patch_size*patch_size, 2]
 
     # use broadcast to generate [1, n_samples, patch_size*patch_size, 2]
-    mesh = mesh + samples 
+    mesh = mesh.cuda() + samples 
 
     return mesh
 
@@ -185,11 +187,43 @@ def sampled_intensity(samples, img, patch_size):
     mesh[..., 0] /= width - 1 
     mesh[..., 1] /= height - 1 
 
-    intensities = F.grid_sample(tgt, mesh, mode='bilinear', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
+    intensities = F.grid_sample(img, mesh.float(), mode='bilinear', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
     intensities = intensities.view(1, 3, n_samples, patch_size, patch_size)
     return intensities
 
-def sampled_patch_center_loss(samples, tgt_img, src_img, K, cam_coords,
+def compute_sampled_homography(samples, K, cam_coords,
+                               pred_pose, pred_norm,
+                               patch_size=7, dilation=1):
+    """Compute homography for sampled locations
+    Input:
+        samples: [n_samples, 2], each entry is (row, col) = [y, x]
+        K: intrinsics, [B, 4, 4]
+        cam_coords: backprojected 3D points (K_inv @ x * d), [B, 4, H * W]
+        pred_pose: predicted poses, [B, 4, 4]
+        pred_norm: predicted surface normal, [B, 3, H, W]
+        patch_size: patch size, integer (default = 7)
+        dilation: dilation factor for patch (default = 1)
+
+    """
+    batch, _, height, width = pred_norm.shape
+    n_samples = samples.shape[0]
+    cam_coords = cam_coords[:, :-1, :].view(batch, 3, height, width) # [B, 3, H, W]
+    K = K[:, :3, :3] 
+    psize_eff = 1 + dilation * (patch_size - 1) # effective patch size
+    ofs = (psize_eff - 1) // 2       
+    
+    # compute homography for every pixel location
+    H_all = calculate_homography(pred_pose, K, pred_norm, cam_coords) #[B, 3, 3, H, W]
+    
+    # gather H with python-style indexing
+    H = H_all[:, :, :, samples[:, 0], samples[:, 1]]   # [B, 3, 3, n_samples]
+    H = H.permute(0, 3, 1, 2) # [B, n_samples, 3, 3]
+    H = H.unsqueeze(2) # [B, n_samples, 1, 3, 3]
+    return H
+
+def sampled_patch_center_loss(samples, tgt_img, src_img,
+                              K,
+                              cam_coords,                      
                               pred_pose, pred_depth, pred_norm,
                               patch_size=7, dilation=1):
     """Computes the patch intensity difference between tgt and src
@@ -216,10 +250,10 @@ def sampled_patch_center_loss(samples, tgt_img, src_img, K, cam_coords,
     ofs = (psize_eff - 1) // 2       
     
     # compute homography for every pixel location
-    H = calculate_homography(pred_pose, K, pred_norm, cam_coords) #[B, 3, 3, H, W]
+    H_all = calculate_homography(pred_pose, K, pred_norm, cam_coords) #[B, 3, 3, H, W]
     
     # gather H with python-style indexing
-    H = H[:, :, :, samples]   # [B, 3, 3, n_samples]
+    H = H_all[:, :, :, samples[:, 0], samples[:, 1]]   # [B, 3, 3, n_samples]
     H = H.permute(0, 3, 1, 2) # [B, n_samples, 3, 3]
     H = H.unsqueeze(2) # [B, n_samples, 1, 3, 3]
     
@@ -239,18 +273,21 @@ def sampled_patch_center_loss(samples, tgt_img, src_img, K, cam_coords,
         
 
     # matmul with the last two dimensions aligned
-    patch_coords = torch.matmul(H, patch_coords) # [B, n_samples, size*patch_size, 3, 1]
-    patch_coords = patch_coords.squeeze(-1) # [B, n_samples, size*patch_size, 3]
+    warped_coords = torch.matmul(H, patch_coords) # [B, n_samples, size*patch_size, 3, 1]
+    warped_coords = warped_coords.squeeze(-1) # [B, n_samples, size*patch_size, 3]
 
 
     # dehomogenize
-    patch_coords = patch_coords[:, :, :, :2] / (patch_coords[:, :, :, 2:] + 1e-10) # [B, n_samples, size*patch_size, 2]
-    
+    warped_coords = warped_coords[:, :, :, :2] / (warped_coords[:, :, :, 2:] + 1e-10) # [B, n_samples, size*patch_size, 2]
+    warped_coords[..., 0] /= width - 1
+    warped_coords[..., 1] /= height - 1
+
     # grid sample
-    patch_intensities = F.grid_sample(src_img, patch_coords, padding_mode='border') # [B, 3, n_samples, patch_size*patch_size]
+    patch_intensities = F.grid_sample(src_img, warped_coords, padding_mode='border') # [B, 3, n_samples, patch_size*patch_size]
     patch_intensities = patch_intensities.view(batch, 3, n_samples, patch_size, patch_size)
 
     return patch_intensities, patch_coords
+
 
 
 
