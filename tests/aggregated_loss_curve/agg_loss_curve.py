@@ -183,7 +183,9 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
             # warp
             cam_points = layers['backproject_depth'](depth, inv_K)
             pix_coords = layers['project_3d'](cam_points, K_4x4, frame['pose'])
-            ### TODO: need to fix pix_coords / width, / height
+
+            pix_coords[..., 0] /= width - 1 
+            pix_coords[..., 1] /= height - 1 
             warped = F.grid_sample(frame['src'], pix_coords, padding_mode="border")
 
             # unfold [B, 3, n_samples, patch_size, patch_size]
@@ -201,30 +203,21 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
                 l1_loss_point = l1[:, :, :, center, center].mean(1, True) #[B, 1, N]
                 #l1_loss_patch = l1.mean(4).mean(3).mean(1, True)
                 loss = 0.15 * l1_loss_point + 0.85 * ssim_patch_sampled_pts(tgt_patch, warped_patch) # [B, 1, N]
-            if ofs == 0:
-                loss = loss * frame['mask']
-            else:
-                ## sample from mask
-                grid = sample_xy.unsqueeze(0).unsqueeze(2)
-                grid[..., 0] /= width - 1 
-                grid[..., 1] /= height - 1 
-                mask = F.grid_sample(frame['mask'], grid, mode='nearest', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
-                mask = mask.squeeze()
-                loss = loss * mask
+
             # stack loss 
             loss_maps.append(loss)
 
         # take minimums and corresponding eps
-        loss_stack = torch.cat(loss_maps, dim=1) # [1, len(eps_lst), H, W]
-        min_loss, min_idx = torch.min(loss_stack, dim=1) # both [1, H, W]
-        min_loss = min_loss.squeeze(dim=0) # [H, W]
-        min_idx = min_idx.squeeze(dim=0)   # [H, W]
+        loss_stack = torch.cat(loss_maps, dim=1) # [1, len(eps_lst), N]
+        min_loss, min_idx = torch.min(loss_stack, dim=1) # both [1, N]
+        min_loss = min_loss.squeeze(dim=0) # [N]
+        min_idx = min_idx.squeeze(dim=0)   # [N]
 
         # select sampled locations
         curve = np.zeros([len(eps_lst)])
-        for _, _, y, x in samples:
-            min_eps = eps_lst[min_idx[y, x]]
-            min_loss_value = min_loss[y, x]
+        for idx, _, _, y, x in enumerate(samples):
+            min_eps = eps_lst[min_idx[idx]]
+            min_loss_value = min_loss[idx]]
             result_frame = ((x, y), min_eps, min_loss_value)
             ret_min[patch_size].append(result_frame)
             curve += loss_stack[0, :, y, x].cpu().numpy()
