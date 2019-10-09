@@ -167,6 +167,9 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
     gt_depth = frame['depth']
     inv_K = torch.inverse(frame['K'])
     K_4x4 = enlarge_K(frame['K'])
+    samples_xy = torch.ones_like(samples)
+    samples_xy[:, 0], samples_xy[:, 1] = samples[:, 1], samples[:, 0]
+    _, _, height, width = frame['src'].shape
     
     ret_min = defaultdict(list)
     ret_curve = dict()
@@ -180,17 +183,12 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
             # warp
             cam_points = layers['backproject_depth'](depth, inv_K)
             pix_coords = layers['project_3d'](cam_points, K_4x4, frame['pose'])
+            ### TODO: need to fix pix_coords / width, / height
             warped = F.grid_sample(frame['src'], pix_coords, padding_mode="border")
 
-            # unfold
-            d_key = 'unfold_{}'.format(patch_size)
-            warped_patch = layers[d_key](warped) # [B, 3*psize*psize, (H-2*offset)*(W-2*offset)]
-            warped_patch = warped_patch.view(batch, 3, patch_size, patch_size, height-2*ofs, width-2*ofs)
-            warped_patch = warped_patch.permute(0, 1, 4, 5, 2, 3)
-
-            tgt_patch = layers[d_key](frame['tgt'])
-            tgt_patch = tgt_patch.view(batch, 3, patch_size, patch_size, height-2*ofs, width-2*ofs)
-            tgt_patch = tgt_patch.permute(0, 1, 4, 5, 2, 3)
+            # unfold [B, 3, n_samples, patch_size, patch_size]
+            src_patch = sampled_intensity(samples_xy, warped, patch_size) 
+            tgt_patch = sampled_intensity(samples_xy, tgt_patch, patch_size)
 
             # calculate loss 
             abs_diff = torch.abs(frame['tgt'] - warped)
@@ -198,13 +196,21 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
             if patch_size == 1:
                 loss = l1_loss
             else:
-                l1_loss = l1_loss[:, :, ofs:-ofs, ofs:-ofs]
-                loss = 0.15 * l1_loss + 0.85 * ssim_patch(tgt_patch, warped_patch) # [B, 1, H, W]
+                l1 = np.abs(src_patch - tgt_patch)
+                center = int((patch_size - 1) / 2)
+                l1_loss_point = l1[:, :, :, center, center].mean(1, True) #[B, 1, N]
+                #l1_loss_patch = l1.mean(4).mean(3).mean(1, True)
+                loss = 0.15 * l1_loss_point + 0.85 * ssim_patch_sampled_pts(tgt_patch, warped_patch) # [B, 1, N]
             if ofs == 0:
                 loss = loss * frame['mask']
             else:
-                loss = loss * frame['mask'][:, :, ofs:-ofs, ofs:-ofs]
-
+                ## sample from mask
+                grid = sample_xy.unsqueeze(0).unsqueeze(2)
+                grid[..., 0] /= width - 1 
+                grid[..., 1] /= height - 1 
+                mask = F.grid_sample(frame['mask'], grid, mode='nearest', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
+                mask = mask.squeeze()
+                loss = loss * mask
             # stack loss 
             loss_maps.append(loss)
 

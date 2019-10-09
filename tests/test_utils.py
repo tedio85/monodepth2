@@ -9,6 +9,33 @@ def barron_loss(x, alpha=1, c=0.01):
     loss = t1 * (np.power(base, alpha/2) - 1)
     return loss
 
+def ssim_patch_sampled_pts(x, y):
+    """Computes the patch SSIM loss
+        Input:
+        x: [B, 3, N, patch_size, patch_size]
+        y: [B, 3, N, patch_size, patch_size]
+        Output:
+        SSIM: SSIM of all patches, [B, 1, N]
+    """
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    B, _, N, size, _ = x.shape
+    x = x.contiguous().view(B, 3, N, size * size)
+    y = y.contiguous().view(B, 3, N, size * size)
+
+    mu_x = torch.mean(x, dim=3)
+    mu_y = torch.mean(y, dim=3)
+
+    sig_x = torch.mean(x ** 2, dim=3) - mu_x ** 2
+    sig_y = torch.mean(y ** 2, dim=3) - mu_y ** 2
+    sig_xy = torch.mean(x * y, dim=3) - mu_x * mu_y
+
+    SSIM_n = (2 * mu_x * mu_y + C1) * (2 * sig_xy + C2)
+    SSIM_d = (mu_x ** 2 + mu_y ** 2 + C1) * (sig_x + sig_y + C2) + 1e-10
+    SSIM = torch.clamp((1 - SSIM_n / SSIM_d) / 2, 0, 1)
+
+    SSIM = torch.mean(SSIM, dim=1, keepdim=True)
+    return SSIM
+
 def DSSIM(I_x, I_y,
           C1=0.01 ** 2,
           C2=0.03 ** 2):
@@ -117,7 +144,7 @@ def patch_center_loss(tgt_img, src_img, K, cam_coords,
 def form_meshgrid(samples, patch_size, dilation=1):
     """
     Args:
-        samples: [n_samples, 2], each entry is (row, col) = [y, x]
+        samples: [n_samples, 2], each entry is (row, col) = [x, y]
         patch_size: patch size, integer
     Returns:
         mesh: a meshgrid of shape [1, n_samples, patch_size*patch_size, 2] 
@@ -146,7 +173,7 @@ def sampled_intensity(samples, img, patch_size):
     """Use to sample intensities at target and source images at corresponding patch
         locations in the square patch experiment
     Args:
-        samples: [n_samples, 2], each entry is (row, col) = [y, x]
+        samples: [n_samples, 2], each entry is (row, col) = [x, y]
         img: image of shape [1, 3, H, W] 
         patch_size: patch size, integer
     Returns:
@@ -158,7 +185,7 @@ def sampled_intensity(samples, img, patch_size):
     mesh[..., 0] /= width - 1 
     mesh[..., 1] /= height - 1 
 
-    intensities = F.grid_sample(tgt, mesh, mode='bilinear', padding_mode='boarder') # [1, 3, n_samples, patch_size*patch_size]
+    intensities = F.grid_sample(tgt, mesh, mode='bilinear', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
     intensities = intensities.view(1, 3, n_samples, patch_size, patch_size)
     return intensities
 
