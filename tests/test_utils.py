@@ -1,5 +1,6 @@
 import numpy as np
 import torch 
+import torch.nn.functional as F
 from normal_loss import *
 
 def barron_loss(x, alpha=1, c=0.01):
@@ -112,3 +113,108 @@ def patch_center_loss(tgt_img, src_img, K, cam_coords,
     patch_diff = pixel_abs * 0.15 + ssim_patch(tgt_intensities, src_intensities) * 0.85
 
     return patch_diff, src_coords
+
+def form_meshgrid(samples, patch_size, dilation=1):
+    """
+    Args:
+        samples: [n_samples, 2], each entry is (row, col) = [y, x]
+        patch_size: patch size, integer
+    Returns:
+        mesh: a meshgrid of shape [1, n_samples, patch_size*patch_size, 2] 
+                where each element is centered at (x, y)
+    """
+    # tile center coordinates
+    samples = samples.unsqueeze(0).unsqueeze(2) # [1, n_samples, 1, 2]
+    samples = samples.repeat([1, 1, patch_size*patch_size, 1]) # [1, n_samples, patch_size*patch_size, 2] 
+
+    # create meshgrid
+    effective_patch_size = 1 + (patch_size - 1) * dilation
+    ofs = (effective_patch_size - 1) // 2
+    x = torch.arange(start=-ofs, end=ofs+1, step=dilation)
+    grid_y, grid_x = torch.meshgrid(x, x) # both [patch_size, patch_size]
+    grid_x = grid_x.contiguous().view(-1) # [patch_size*patch_size, ]
+    grid_y = grid_y.contiguous().view(-1) # [patch_size*patch_size, ]
+    mesh = torch.stack([grid_x, grid_y], dim=1) # [patch_size*patch_size, 2]
+    mesh = mesh.unsqueeze(0).unsqueeze(0) # [1, 1, patch_size*patch_size, 2]
+
+    # use broadcast to generate [1, n_samples, patch_size*patch_size, 2]
+    mesh = mesh + samples 
+
+    return mesh
+
+def sampled_intensity(samples, img, patch_size):
+    """Use to sample intensities at target and source images at corresponding patch
+        locations in the square patch experiment
+    Args:
+        samples: [n_samples, 2], each entry is (row, col) = [y, x]
+        img: image of shape [1, 3, H, W] 
+        patch_size: patch size, integer
+    Returns:
+        sampled intensities for each patch [1, 3, n_samples, patch_size, patch_size]
+    """
+    _, _, height, width = img.shape
+    n_samples = samples.shape[0]
+    mesh = form_meshgrid(samples, patch_size, dilation=1) # [1, n_samples, patch_size*patch_size, 2] 
+    mesh[..., 0] /= width - 1 
+    mesh[..., 1] /= height - 1 
+
+    intensities = F.grid_sample(tgt, mesh, mode='bilinear', padding_mode='boarder') # [1, 3, n_samples, patch_size*patch_size]
+    intensities = intensities.view(1, 3, n_samples, patch_size, patch_size)
+    return intensities
+
+def sampled_patch_center_loss(samples, tgt_img, src_img, K, cam_coords,
+                              pred_pose, pred_depth, pred_norm,
+                              patch_size=7, dilation=1):
+    """Computes the patch intensity difference between tgt and src
+    Input:
+        samples: [n_samples, 2], each entry is (row, col) = [y, x]
+        tgt_img: target image, [B, 3, H, W]
+        src_img: source image, [B, 3, H, W]
+        K: intrinsics, [B, 4, 4]
+        cam_coords: backprojected 3D points (K_inv @ x * d), [B, 4, H * W]
+        pred_pose: predicted poses, [B, 4, 4]
+        pred_depth: predicted depth, [B, 1, H, W]
+        pred_norm: predicted surface normal, [B, 3, H, W]
+        patch_size: patch size, integer (default = 7)
+        dilation: dilation factor for patch (default = 1)
+    Output:
+        
+    """
+    batch, _, height, width = pred_norm.shape
+    n_samples = samples.shape[0]
+    cam_coords = cam_coords[:, :-1, :].view(batch, 3, height, width) # [B, 3, H, W]
+    K = K[:, :3, :3] 
+    psize_eff = 1 + dilation * (patch_size - 1) # effective patch size
+    offset = (psize_eff - 1) // 2       
+    
+    # compute homography for every pixel location
+    H = calculate_homography(pred_pose, K, pred_norm, cam_coords) #[B, 3, 3, H, W]
+    
+    # gather H with python-style indexing
+    H = H[:, :, :, samples]   # [B, 3, 3, n_samples]
+    H = H.permute(0, 3, 1, 2) # [B, n_samples, 3, 3]
+    
+
+    # cam_coords = (K_inv @ pts * d) / d 
+    cam_coords = cam_coords / pred_depth # [B, 3, H, W]
+
+    # unfold all cam_coords
+    unfold = torch.nn.Unfold(kernel_size=(patch_size, patch_size), dilation=dilation)
+    patch_coords = unfold(cam_coords) # # [B, 3*psize*psize, (H-2*offset)*(W-2*offset)]
+
+    # gather patch_coords at sampled locations
+    samples = samples - offset # adjust according to offset
+    patch_coords = patch_coords[:, :, samples] # [B, 3*psize*psize, n_samples]
+    patch_coords = patch_coords.view(1, 3, patch_size, patch_size, n_samples) # THIS STEP NEEDS TO BE CHECKED
+    patch_coords = patch_coords.permute(0, 2, 3, 4, 1)
+
+    # matmul with the last two dimensions aligned
+    patch_coords = torch.matmul(H, patch_coords) # [B, n_samples, 3, 1]
+
+    # dehomogenize
+    patch_coords = patch_coords[:, :, :2, :] / (patch_coords[:, :, 2:, :] + 1e-10) # [B, n_samples, 2, 1]
+    
+    # grid sample
+
+
+    
