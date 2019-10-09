@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import collections as mc
 import pdb
+import time
 
 def read_pair_list(pair_path):
     f = open(pair_path)
@@ -167,12 +168,13 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
     gt_depth = frame['depth']
     inv_K = torch.inverse(frame['K'])
     K_4x4 = enlarge_K(frame['K'])
-    samples_xy = torch.ones_like(samples)
-    samples_xy[:, 0], samples_xy[:, 1] = samples[:, 1], samples[:, 0]
-    _, _, height, width = frame['src'].shape
     
-    ret_min = defaultdict(list)
-    ret_curve = dict()
+    ## contruct sample_xy, [n_samples, 2], each entry is (col, row) = [x, y]
+    samples_xy = torch.ones_like(samples[:, :2])
+    samples_xy[:, 0], samples_xy[:, 1] = samples[:, 3], samples[:, 2]
+    
+    ret_min_pts, ret_min_patch = defaultdict(list), defaultdict(list)
+    ret_curve_pts, ret_curve_patch = dict(), dict()
     for patch_size in psize_list:
         print('Square Patch of Size {}'.format(patch_size))
         ofs = get_ofs(patch_size, dilation=1)
@@ -189,44 +191,57 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
             warped = F.grid_sample(frame['src'], pix_coords, padding_mode="border")
 
             # unfold [B, 3, n_samples, patch_size, patch_size]
-            src_patch = sampled_intensity(samples_xy, warped, patch_size) 
-            tgt_patch = sampled_intensity(samples_xy, tgt_patch, patch_size)
+            if patch_size != 1:
+                src_patch = sampled_intensity(samples_xy, warped, patch_size) 
+                tgt_patch = sampled_intensity(samples_xy, frame['tgt'], patch_size)
 
             # calculate loss 
             abs_diff = torch.abs(frame['tgt'] - warped)
             l1_loss = abs_diff.mean(1, True)
             if patch_size == 1:
-                loss = l1_loss
+                grid = torch.zeros_like(samples_xy)
+                grid[..., 0] = samples_xy[..., 0] / (width - 1)
+                grid[..., 1] = samples_xy[..., 1] / (height - 1)
+                grid = grid.unsqueeze(0).unsqueeze(2)
+                loss = F.grid_sample(l1_loss, grid.to(torch.float), padding_mode="border").squeeze(-1)
+                loss = torch.stack([loss, loss], dim=-1)
             else:
-                l1 = np.abs(src_patch - tgt_patch)
+                l1 = torch.abs(src_patch - tgt_patch)
                 center = int((patch_size - 1) / 2)
                 l1_loss_point = l1[:, :, :, center, center].mean(1, True) #[B, 1, N]
-                #l1_loss_patch = l1.mean(4).mean(3).mean(1, True)
-                loss = 0.15 * l1_loss_point + 0.85 * ssim_patch_sampled_pts(tgt_patch, warped_patch) # [B, 1, N]
-
+                l1_loss_patch = l1.mean(4).mean(3).mean(1, True)
+                loss_point = 0.15 * l1_loss_point + 0.85 * ssim_patch_sampled_pts(tgt_patch, src_patch) # [B, 1, N]
+                loss_patch = 0.15 * l1_loss_patch + 0.85 * ssim_patch_sampled_pts(tgt_patch, src_patch) # [B, 1, N]
+                loss = torch.stack([loss_point, loss_patch], dim=-1)
+                
             # stack loss 
             loss_maps.append(loss)
-
         # take minimums and corresponding eps
-        loss_stack = torch.cat(loss_maps, dim=1) # [1, len(eps_lst), N]
-        min_loss, min_idx = torch.min(loss_stack, dim=1) # both [1, N]
-        min_loss = min_loss.squeeze(dim=0) # [N]
-        min_idx = min_idx.squeeze(dim=0)   # [N]
-
+        loss_stack = torch.cat(loss_maps, dim=1) # [1, len(eps_lst), N, 2]
+        min_loss, min_idx = torch.min(loss_stack, dim=1) # both [1, N, 2]
+        min_loss = min_loss.squeeze(dim=0).cpu().numpy() # [N, 2]
+        min_idx = min_idx.squeeze(dim=0).cpu().numpy()   # [N, 2]
+        
         # select sampled locations
-        curve = np.zeros([len(eps_lst)])
-        for idx, _, _, y, x in enumerate(samples):
-            min_eps = eps_lst[min_idx[idx]]
-            min_loss_value = min_loss[idx]]
-            result_frame = ((x, y), min_eps, min_loss_value)
-            ret_min[patch_size].append(result_frame)
-            curve += loss_stack[0, :, y, x].cpu().numpy()
-        ret_curve[patch_size] = curve/samples.shape[0]
+        pts_curve, patch_curve = np.zeros([len(eps_lst)]), np.zeros([len(eps_lst)])
+        for idx, (_, _, y, x) in enumerate(samples):
+            ret_min_pts[patch_size].append(make_result_frame(eps_lst, min_idx[:, 0], min_loss[:, 0], idx, x, y))
+            ret_min_patch[patch_size].append(make_result_frame(eps_lst, min_idx[:, 1], min_loss[:, 1], idx, x, y)) 
+            pts_curve += loss_stack[0, :, idx, 0].cpu().numpy()
+            patch_curve += loss_stack[0, :, idx, 1].cpu().numpy()
+        ret_curve_pts[patch_size] = pts_curve/samples.shape[0]
+        ret_curve_patch[patch_size] = patch_curve/samples.shape[0]
         
         # clear unused variables
         del loss_maps
 
-    return ret_min, ret_curve
+    return (ret_min_pts, ret_min_patch), (ret_curve_pts, ret_curve_patch)
+
+def make_result_frame(eps_lst, min_idx, min_loss, idx, x, y):
+    min_eps = eps_lst[min_idx[idx]]
+    min_loss_value = min_loss[idx]
+    result_frame = ((x, y), min_eps, min_loss_value)
+    return result_frame
         
 def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
@@ -296,7 +311,8 @@ def run_test(frame_t,
              agg_results,
              layers,
              psize_list,
-             gt_deviation, step, n_samples=100):
+             gt_deviation, step, root, n_samples=100):
+    #start = time.time()
     # randomly sample pixels in the valid region
     psize_max = psize_list[-1]
     ofs_max = get_ofs(psize_max, dilation=1)
@@ -313,26 +329,41 @@ def run_test(frame_t,
     # generate loss curve for all samples with square/deformed patch
     with torch.no_grad():
         r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
-        r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
+        #r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
 
     # dump r_x_min containing (pixel location, absolute depth error) 
-    dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve)
+    #dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve)
+    dump_result(frame_t, r_square_min, None, r_square_curve, None, root['dump'])
 
     # aggregate loss curve
     for i, patch_size in enumerate(psize_list):
-        agg_results['square'][i] += r_square_curve
-        agg_results['deform'][i] += r_deform_curve
+        agg_results['square_pts'][i] += r_square_curve[0][patch_size]
+        agg_results['square_patch'][i] += r_square_curve[1][patch_size]
+        #agg_results['deform'][i] += r_deform_curve
+    
+    #print(time.time() - start)
+
     return agg_results # return updated aggregated results
 
-def dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve):
+def dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve, dump_root):
     scene, tgt, src = frame_t
-    file_path = os.path.join(dump_root, scene, '{}_{}.txt'.format(tgt, src))
+    dir_path = os.path.join(dump_root, scene)
+    if not os.path.exists(dir_path):
+        os.mkdir(dir_path)
+        
+    file_path = os.path.join(dir_path, '{}_{}'.format(tgt, src))
     
     record_dict = dict()
-    record_dict['square'] = r_square_min
-    record_dict['deform'] = r_deform_min
-    record_dict['square_curve'] = r_square_curve
-    record_dict['deform_curve'] = r_deform_curve
+    record_dict['square_pt'] = r_square_min[0]
+    #record_dict['deform_pt'] = r_deform_min[0]
+    record_dict['square_curve_pt'] = r_square_curve[0]
+    #record_dict['deform_curve_pt'] = r_deform_curve[0]
+
+    record_dict['square_patch'] = r_square_min[1]
+    #record_dict['deform_patch'] = r_deform_min[1]
+    record_dict['square_curve_patch'] = r_square_curve[1]
+    #record_dict['deform_curve_patch'] = r_deform_curve[1]
+    
 
     np.savez(file_path, record_dict)
 
@@ -341,9 +372,10 @@ if __name__ == '__main__':
     list_path = "/viscompfs/users/sawang/ScanNet/analyze_list_new.txt"
     root = dict()
     root['data'] = "/viscompfs/users/sawang/ScanNet/data_motion_range"
-    root['gt'] =   "/viscompfs/users/sawang/ScanNet/data_gt"
+    root['gt'] = "/viscompfs/users/sawang/ScanNet/data_gt"
     root['pose'] = "/viscompfs/users/sawang/ScanNet/data_pose"
     root['depth'] = "/viscompfs/users/sawang/ScanNet/data/scans"
+    root['dump'] = "/viscompfs/users/sawang/ScanNet/analysis"
     img_w, img_h = 320, 240
     deviation = 0.2
     step = 1e-4
@@ -365,8 +397,10 @@ if __name__ == '__main__':
             torch.nn.Unfold(kernel_size=(patch_size, patch_size), dilation=1).cuda()
 
     agg_results = dict()
-    agg_results['square'] = np.zeros([len(psize_list), len(eps_lst)])
-    agg_results['deform'] = np.zeros([len(psize_list), len(eps_lst)])
+    agg_results['square_pts'] = np.zeros([len(psize_list), len(eps_lst)])
+    agg_results['square_patch'] = np.zeros([len(psize_list), len(eps_lst)])
+    agg_results['deform_pts'] = np.zeros([len(psize_list), len(eps_lst)])
+    agg_results['deform_patch'] = np.zeros([len(psize_list), len(eps_lst)])
 
     frame_list = read_pair_list(list_path)
     for frame_t in frame_list:
@@ -377,5 +411,5 @@ if __name__ == '__main__':
                                agg_results,
                                layers,
                                psize_list,
-                               deviation, step, n_samples=100)
-        
+                               deviation, step, root, n_samples=100)
+    
