@@ -183,11 +183,13 @@ def sampled_intensity(samples, img, patch_size):
     """
     _, _, height, width = img.shape
     n_samples = samples.shape[0]
-    mesh = form_meshgrid(samples, patch_size, dilation=1) # [1, n_samples, patch_size*patch_size, 2] 
-    mesh[..., 0] /= width - 1 
-    mesh[..., 1] /= height - 1 
+    mesh = form_meshgrid(samples, patch_size, dilation=1).to(torch.float) # [1, n_samples, patch_size*patch_size, 2] 
+    
+    mesh[..., 0] /= (width - 1)
+    mesh[..., 1] /= (height - 1)
+    mesh = (mesh - 0.5) * 2
 
-    intensities = F.grid_sample(img, mesh.to(torch.float), mode='bilinear', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
+    intensities = F.grid_sample(img, mesh, mode='nearest', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
     intensities = intensities.view(1, 3, n_samples, patch_size, patch_size)
     return intensities
 
