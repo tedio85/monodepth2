@@ -244,72 +244,88 @@ def make_result_frame(eps_lst, min_idx, min_loss, idx, x, y):
     return result_frame
         
 def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
+    batch = frame['tgt'].shape[0]
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
     gt_depth = frame['depth']
     inv_K = torch.inverse(frame['K'])
+    n_samples = samples.shape[0]
 
     ## contruct sample_xy, [n_samples, 2], each entry is (col, row) = [x, y]
     samples_xy = torch.ones_like(samples[:, :2])
     samples_xy[:, 0], samples_xy[:, 1] = samples[:, 3], samples[:, 2]
 
-    ret_min = defaultdict(list)
-    ret_curve = dict()
-    for patch_size in psize_list[1:]: # skip patch size of 1
-        print('Deformed Patch of Size {}'.format(patch_size))
-        ofs = get_ofs(patch_size, dilation=1)
+    loss_tensor_point = torch.zeros([batch, len(eps_lst), len(psize_list), n_samples])
+    loss_tensor_patch = torch.zeros([batch, len(eps_lst), len(psize_list), n_samples])
+    # fill patch size=1 locations with constants
+    loss_tensor_point[:, :, 0, :] = 1e6 
+    loss_tensor_patch[:, :, 0, :] = 1e6
 
+    for eps_idx, eps in enumerate(eps_lst):
+        print('eps: {}'.format(eps))
+        depth = gt_depth + eps
+        cam_points = layers['backproject_depth'](depth, inv_K)
+
+        # generate target patches, shape [1, 3, n_samples, patch_size, patch_size]
+        tgt_patches = sampled_intensity(samples_xy, frame['tgt'], patch_size) 
+
+        # generate source patches by warping with the largest patch size
         # shape [1, 3, n_samples, patch_size, patch_size]
-        tgt_patches = sampled_intensity(samples_xy, frame['tgt'], patch_size)
-        # shape [1, 3, 1, n_samples, patch_size, patch_size]
-        tgt_patches = tgt_patches.unsqueeze(2)
+        src_patches, src_coords = sampled_patch_center_loss(
+                                    samples[:, 2:],
+                                    frame['tgt'],
+                                    frame['src'],
+                                    frame['K'],
+                                    cam_points,
+                                    frame['pose'],
+                                    depth,
+                                    frame['norm'],
+                                    patch_size=psize_list[-1], # largest patch size
+                                    dilation=1)
+        
+        for patch_size in psize_list[::-1][:-1] # skip patch size=1
+            # crop patches
+            prev_patch_size = tgt_patches.shape[-1]
+            ctr = get_ofs(prev_patch_size, dilation=1) # old center index
+            ofs = get_ofs(patch_size, dilation=1)      # offset for new patch size
+            tgt_patches = tgt_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
+            src_patches = src_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
 
-        loss_maps = []
-        for eps in eps_lst:
-            depth = gt_depth + eps
-            cam_points = layers['backproject_depth'](depth, inv_K)
-            print('eps: {}'.format(eps))
-            # shape [1, 3, n_samples, patch_size, patch_size]
-            src_patches, src_coords = sampled_patch_center_loss(
-                                        samples[:, 2:],
-                                        frame['tgt'],
-                                        frame['src'],
-                                        frame['K'],
-                                        cam_points,
-                                        frame['pose'],
-                                        depth,
-                                        frame['norm'],
-                                        patch_size=patch_size,
-                                        dilation=1)
-            # shape [1, 3, 1, n_samples, patch_size, patch_size]        
-            src_patches = src_patches.unsqueeze(2)
-                        
-            # calculate loss
-            ctr_diff = tgt_patches[:, :, :, :, ofs, ofs] - src_patches[:, :, :, :, ofs, ofs]
-            ctr_l1_loss = torch.mean(torch.abs(ctr_diff), dim=1, keepdim=True) # [B, 1, 1, n_samples]
-            ctr_l1_loss = ctr_l1_loss.squeeze(2)
-            loss = 0.15 * ctr_l1_loss + 0.85 * ssim_patch(tgt_patches, src_patches).squeeze(2)
-            loss_maps.append(loss)
+            # compute loss
+            l1_loss_patch = torch.abs(tgt_patches - src_patches).mean(1, True) # [B, 1, n_samples, patch_size, patch_size]
+            l1_loss_point= l1_loss[:, :, :, ofs, ofs] # [B, 1, n_samples]
+            dssim = ssim_patch_sampled_pts(tgt_patch, src_patch)
+            loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
+            loss_patch = 0.15 * l1_loss_patch + 0.85 * dssim # [B, 1, N]
+            
+            # log loss
+            # stack ordered according to patch size from small to large
+            patch_size_idx = psize_list.index(patch_size) 
+            loss_tensor_point[:, eps_idx, patch_size_idx, :] = loss_point
+            loss_tensor_patch[:, eps_idx, patch_size_idx, :] = loss_patch
 
         # take minimums and corresponding eps
-        loss_stack = torch.cat(loss_maps, dim=1) # [1, len(eps_lst), n_samples]
-        min_loss, min_idx = torch.min(loss_stack, dim=1) # both [1, n_samples]
-        min_loss = min_loss.squeeze(dim=0) # [n_samples, ]
-        min_idx = min_idx.squeeze(dim=0)   # [n_samples, ]
+        min_point_loss, min_point_idx = torch.min(loss_tensor_point, dim=1) # [B, n_size, n_samples]
+        min_patch_loss, min_patch_idx = torch.min(loss_tensor_patch, dim=1) # [B, n_size, n_samples]
 
-        # select sampled locations
-        curve = np.zeros([len(eps_lst)])
-        for i, (y, x) in enumerate(samples[:, 2:]):
-            min_eps = eps_lst[i]
-            min_loss_value = min_loss[i]
-            result_frame = ((x, y), frame['norm'][0, :, y, x], min_eps, min_loss_value)
-            ret_min[patch_size].append(result_frame)
-            curve += loss_stack[0, :, i].cpu().numpy()
-        ret_curve[patch_size] = curve/samples.shape[0]
-        
-        # clear unused variables
-        del loss_maps
+    mean_point_loss = torch.mean(loss_tensor_point, dim=3) #[batch, len(eps_lst), len(psize_list)]
+    mean_patch_loss = torch.mean(loss_tensor_patch, dim=3) #[batch, len(eps_lst), len(psize_list)]
 
-    return ret_min, ret_curve
+    ret_min_pts, ret_min_patch = defaultdict(list), defaultdict(list)
+    ret_curve_pts, ret_curve_patch = dict(), dict()
+    for patch_size in psize_list[1:]: # skip patch size=1
+        patch_size_idx = psize_list.index(patch_size)
+
+        for sample_idx, (_, _, y, x) in enumerate(samples):
+            min_pt = min_point_idx[0, patch_size_idx, sample_idx].cpu().numpy()
+            min_ph = min_patch_idx[0, patch_size_idx, sample_idx].cpu().numpy()
+            ret_min_pts[patch_size].append(((x, y), eps_lst[min_pt], min_point_loss[0, patch_size_idx, sample_idx].cpu().numpy()))
+            ret_min_patch[patch_size].append(((x, y), eps_lst[min_ph], min_patch_loss[0, patch_size_idx, sample_idx].cpu().numpy())) 
+
+        # create curve
+        ret_curve_pts[patch_size] = mean_point_loss[0, :, patch_size_idx].cpu().numpy()
+        ret_curve_patch[patch_size] = mean_patch_loss[0, :, patch_size_idx].cpu().numpy()
+
+    return (ret_min_pts, ret_min_patch), (ret_curve_pts, ret_curve_patch)
 
 def run_test(frame_t,
              frame,
