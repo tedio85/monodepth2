@@ -266,7 +266,7 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
         cam_points = layers['backproject_depth'](depth, inv_K)
 
         # generate target patches, shape [1, 3, n_samples, patch_size, patch_size]
-        tgt_patches = sampled_intensity(samples_xy, frame['tgt'], patch_size) 
+        tgt_patches = sampled_intensity(samples_xy, frame['tgt'], psize_list[-1]) 
 
         # generate source patches by warping with the largest patch size
         # shape [1, 3, n_samples, patch_size, patch_size]
@@ -282,7 +282,7 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
                                     patch_size=psize_list[-1], # largest patch size
                                     dilation=1)
         
-        for patch_size in psize_list[::-1][:-1] # skip patch size=1
+        for patch_size in psize_list[::-1][:-1]: # skip patch size=1
             # crop patches
             prev_patch_size = tgt_patches.shape[-1]
             ctr = get_ofs(prev_patch_size, dilation=1) # old center index
@@ -292,10 +292,10 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
 
             # compute loss
             l1_loss_patch = torch.abs(tgt_patches - src_patches).mean(1, True) # [B, 1, n_samples, patch_size, patch_size]
-            l1_loss_point= l1_loss[:, :, :, ofs, ofs] # [B, 1, n_samples]
-            dssim = ssim_patch_sampled_pts(tgt_patch, src_patch)
+            l1_loss_point= l1_loss_patch[:, :, :, ofs, ofs] # [B, 1, n_samples]
+            dssim = ssim_patch_sampled_pts(tgt_patches, src_patches)
             loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
-            loss_patch = 0.15 * l1_loss_patch + 0.85 * dssim # [B, 1, N]
+            loss_patch = 0.15 * l1_loss_patch.mean(dim=(3, 4)) + 0.85 * dssim # [B, 1, N]
             
             # log loss
             # stack ordered according to patch size from small to large
