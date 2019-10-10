@@ -281,7 +281,6 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
     tgt_patches_ori = sampled_intensity(samples_xy, frame['tgt'], psize_list[-1])
 
     for eps_idx, eps in enumerate(eps_lst):
-        print('eps: {}'.format(eps))
         depth = gt_depth + eps
         cam_points = layers['backproject_depth'](depth, inv_K)
 
@@ -355,11 +354,9 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
 
 def run_test(frame_t,
              frame,
-             agg_results,
              layers,
              psize_list,
              gt_deviation, step, root, n_samples=100):
-    #start = time.time()
     # randomly sample pixels in the valid region
     psize_max = psize_list[-1]
     ofs_max = get_ofs(psize_max, dilation=1)
@@ -375,22 +372,12 @@ def run_test(frame_t,
 
     # generate loss curve for all samples with square/deformed patch
     with torch.no_grad():
-        #r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
+        r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
         r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
 
     # dump r_x_min containing (pixel location, absolute depth error) 
-    #dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve)
-    dump_result(frame_t, r_square_min, None, r_square_curve, None, root['dump'])
+    dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve, root['dump'])
 
-    # aggregate loss curve
-    for i, patch_size in enumerate(psize_list):
-        agg_results['square_pts'][i] += r_square_curve[0][patch_size]
-        agg_results['square_patch'][i] += r_square_curve[1][patch_size]
-        #agg_results['deform'][i] += r_deform_curve
-    
-    #print(time.time() - start)
-
-    return agg_results # return updated aggregated results
 
 def dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve, dump_root):
     scene, tgt, src = frame_t
@@ -441,20 +428,19 @@ if __name__ == '__main__':
     layers['backproject_depth'] = BackprojectDepth(1, img_h, img_w).cuda()
     layers['project_3d'] = Project3D(1, img_h, img_w).cuda()
 
-    agg_results = dict()
-    agg_results['square_pts'] = np.zeros([len(psize_list), len(eps_lst)])
-    agg_results['square_patch'] = np.zeros([len(psize_list), len(eps_lst)])
-    agg_results['deform_pts'] = np.zeros([len(psize_list), len(eps_lst)])
-    agg_results['deform_patch'] = np.zeros([len(psize_list), len(eps_lst)])
-
+    log_iter = 1
+    tic = time.time()
     frame_list = read_pair_list(list_path)
-    for frame_t in frame_list:
+    for i, frame_t in enumerate(frame_list):
         frame = load_data(frame_t, root, img_w, img_h)
         frame = data_to_device_tensor(frame)
         agg_results = run_test(frame_t,
                                frame,
-                               agg_results,
                                layers,
                                psize_list,
                                deviation, step, root, n_samples=n_samples)
     
+        if i % log_iter == 0:
+            toc = time.time()
+            print('Frame {}/{}, {}s/it'.format(i+1, len(frame_list), (toc-tic)/log_iter))
+            tic = toc
