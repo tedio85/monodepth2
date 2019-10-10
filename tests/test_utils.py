@@ -2,6 +2,7 @@ import numpy as np
 import torch 
 import torch.nn.functional as F
 from normal_loss import *
+import pdb
 
 import pdb
 
@@ -58,7 +59,7 @@ def loss_func():
         assert tgt_patch.shape == src_patch.shape  
         patch_size, _, _ = tgt_patch.shape
         ofs = (patch_size-1) // 2
-        L1 = np.mean(np.abs(tgt_patch[ofs, ofs] - src_patch[ofs, ofs]))
+        L1 = np.mean(np.abs(tgt_patch - src_patch))
         dssim = DSSIM(tgt_patch, src_patch)
         return (1-alpha) * L1 + alpha * dssim
     return loss
@@ -152,20 +153,19 @@ def form_meshgrid(samples, patch_size, dilation=1):
         mesh: a meshgrid of shape [1, n_samples, patch_size*patch_size, 2] 
                 where each element is centered at (x, y)
     """
+    N, _ = samples.shape
     # tile center coordinates
     samples = samples.unsqueeze(0).unsqueeze(2) # [1, n_samples, 1, 2]
     samples = samples.repeat([1, 1, patch_size*patch_size, 1]) # [1, n_samples, patch_size*patch_size, 2] 
-
     # create meshgrid
     effective_patch_size = 1 + (patch_size - 1) * dilation
     ofs = (effective_patch_size - 1) // 2
-    x = torch.arange(start=-ofs, end=ofs+1, step=dilation)
+    x = torch.arange(start=-ofs, end=ofs+1, step=dilation).cuda()
     grid_y, grid_x = torch.meshgrid(x, x) # both [patch_size, patch_size]
     grid_x = grid_x.contiguous().view(-1) # [patch_size*patch_size, ]
     grid_y = grid_y.contiguous().view(-1) # [patch_size*patch_size, ]
     mesh = torch.stack([grid_x, grid_y], dim=1) # [patch_size*patch_size, 2]
     mesh = mesh.unsqueeze(0).unsqueeze(0) # [1, 1, patch_size*patch_size, 2]
-
     # use broadcast to generate [1, n_samples, patch_size*patch_size, 2]
     mesh = mesh.cuda() + samples 
 
@@ -187,7 +187,7 @@ def sampled_intensity(samples, img, patch_size):
     mesh[..., 0] /= width - 1 
     mesh[..., 1] /= height - 1 
 
-    intensities = F.grid_sample(img, mesh.float(), mode='bilinear', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
+    intensities = F.grid_sample(img, mesh.to(torch.float), mode='bilinear', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
     intensities = intensities.view(1, 3, n_samples, patch_size, patch_size)
     return intensities
 
