@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from normal_loss import *
 import pdb
 
-import pdb
 
 def barron_loss(x, alpha=1, c=0.01):
     t1 = np.abs(alpha-2) / alpha # term 1
@@ -267,10 +266,10 @@ def sampled_patch_center_loss(samples, tgt_img, src_img,
     for y, x in samples:
         if ofs>=0:
             coords = cam_coords[:, :, y-ofs:y+ofs+1, x-ofs:x+ofs+1] # [B, 3, patch_size, patch_size]
+            coords = coords.contiguous().view(batch, 3, -1) # [B, 3, patch_size*patch_size]
             patch_coords.append(coords)
-    patch_coords = torch.stack(patch_coords, dim=-1) # [B, 3, patch_size, patch_size, n_samples]
-    patch_coords = patch_coords.permute(0, 4, 2, 3, 1) # [B, n_samples, patch_size, patch_size, 3]
-    patch_coords = patch_coords.view(batch, n_samples, -1, 3) # [B, n_samples, patch_size*patch_size, 3]
+    patch_coords = torch.stack(patch_coords, dim=-1) # [B, 3, patch_size*patch_size, n_samples]
+    patch_coords = patch_coords.permute(0, 3, 2, 1) # [B, n_samples, patch_size* patch_size, 3]
     patch_coords = patch_coords.unsqueeze(-1) # [B, n_samples, patch_size*patch_size, 3, 1]
         
 
@@ -281,14 +280,16 @@ def sampled_patch_center_loss(samples, tgt_img, src_img,
 
     # dehomogenize
     warped_coords = warped_coords[:, :, :, :2] / (warped_coords[:, :, :, 2:] + 1e-10) # [B, n_samples, size*patch_size, 2]
+    ret_coords = warped_coords.clone()
     warped_coords[..., 0] /= width - 1
     warped_coords[..., 1] /= height - 1
-
+    warped_coords = (warped_coords - 0.5) * 2
+    
     # grid sample
     patch_intensities = F.grid_sample(src_img, warped_coords, padding_mode='border') # [B, 3, n_samples, patch_size*patch_size]
     patch_intensities = patch_intensities.view(batch, 3, n_samples, patch_size, patch_size)
 
-    return patch_intensities, patch_coords
+    return patch_intensities, ret_coords
 
 
 
