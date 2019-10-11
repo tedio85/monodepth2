@@ -3,6 +3,7 @@ import sys
 sys.path.insert(0, '/viscompfs/users/tedyu/monodepth2/tests/')
 sys.path.insert(0, '/viscompfs/users/tedyu/monodepth2/')
 import random
+import argparse
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -18,6 +19,17 @@ import matplotlib.patches as patches
 from matplotlib import collections as mc
 import pdb
 import time
+
+def set_parse():
+    """Set arguments for parser"""
+
+    parser = argparse.ArgumentParser(
+                description=\
+                    'Compute loss values on ScanNet dataset with different patch sizes and orientation')
+    parser.add_argument('--parts', default=4, help='the number of partitions the dataset is divided into')
+    parser.add_argument('--split', default=-1, help='Which partition will this application be responsible for' + \
+                                                      'should be an integer raning from 1~parts, -1 denotes the entire dataset')
+    return parser
 
 def read_pair_list(pair_path):
     f = open(pair_path)
@@ -412,6 +424,13 @@ if __name__ == '__main__':
     psize_list = [1] + [2**i+1 for i in range(1, 7)] # [1, 3, 5, 9, 17, 33, 65]
     eps_lst = np.arange(-deviation, deviation, step)
 
+    # parse arguments
+    args = parser.parse_args()
+    parts = args.parts
+    split = args.split # [1, parts], for parts=4, can be 1, 2, 3, 4
+    if split > parts:
+        raise ValueError("`split` should be less or equal to `parts`")
+
     # set random seed
     seed = 732
     random.seed(seed)
@@ -426,7 +445,14 @@ if __name__ == '__main__':
     log_iter = 1
     tic = time.time()
     frame_list = read_pair_list(list_path)
-    for i, frame_t in enumerate(frame_list):
+
+    # select partition
+    partition_size = len(frame_list) // parts
+    start = (split - 1) * partition_size
+    end = start + partition_size if split < parts else len(frame_list)
+    partition = frame_list[start:end]
+
+    for i, frame_t in enumerate(partition, start):
         frame = load_data(frame_t, root, img_w, img_h)
         frame = data_to_device_tensor(frame)
         agg_results = run_test(frame_t,
