@@ -248,7 +248,7 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
     # generate dictionaries
     ret_min_pts, ret_min_patch = defaultdict(list), defaultdict(list)
     ret_curve_pts, ret_curve_patch = dict(), dict()
-    for patch_size in psize_list[1:]: # skip patch size=1
+    for patch_size in psize_list: 
         patch_size_idx = psize_list.index(patch_size)
 
         for sample_idx, (_, _, y, x) in enumerate(samples.cpu().numpy()):
@@ -466,7 +466,7 @@ if __name__ == '__main__':
                                    frame,
                                    layers,
                                    psize_list,
-                           deviation, step, root, args.type_name, n_samples=n_samples)
+                                   deviation, step, root, args.type_name, n_samples=n_samples)
         if i % log_iter == 0:
             toc = time.time()
             print('Frame {}/{}, {}s/it'.format(i+1, len(frame_list), (toc-tic)/log_iter))
