@@ -354,8 +354,8 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
             min_ph = min_patch_idx[0, patch_size_idx, sample_idx].cpu().numpy()
             min_pt_value = min_point_loss[0, patch_size_idx, sample_idx].cpu().numpy()
             min_ph_value = min_patch_loss[0, patch_size_idx, sample_idx].cpu().numpy()
-            point_t = ((x, y), frame['norm'][0, :, y, x], eps_lst[min_pt], min_pt_value)
-            patch_t = ((x, y), frame['norm'][0, :, y, x], eps_lst[min_ph], min_ph_value)
+            point_t = ((x, y), frame['norm'][0, :, y, x].cpu().numpy(), eps_lst[min_pt], float(min_pt_value))
+            patch_t = ((x, y), frame['norm'][0, :, y, x].cpu().numpy(), eps_lst[min_ph], float(min_ph_value))
             ret_min_pts[patch_size].append(point_t)
             ret_min_patch[patch_size].append(patch_t) 
 
@@ -461,11 +461,12 @@ if __name__ == '__main__':
     for i, frame_t in enumerate(partition, start):
         frame = load_data(frame_t, root, img_w, img_h)
         frame = data_to_device_tensor(frame)
-        agg_results = run_test(frame_t,
-                               frame,
-                               layers,
-                               psize_list,
-                               deviation, step, root, args.type_name, n_samples=n_samples)
+        if i != 3032:
+            agg_results = run_test(frame_t,
+                                   frame,
+                                   layers,
+                                   psize_list,
+                           deviation, step, root, args.type_name, n_samples=n_samples)
         if i % log_iter == 0:
             toc = time.time()
             print('Frame {}/{}, {}s/it'.format(i+1, len(frame_list), (toc-tic)/log_iter))
