@@ -427,8 +427,8 @@ if __name__ == '__main__':
     # parse arguments
     parser = set_parse()
     args = parser.parse_args()
-    parts = args.parts
-    split = args.split # [1, parts], for parts=4, can be 1, 2, 3, 4
+    parts = int(args.parts)
+    split = int(args.split) # [1, parts], for parts=4, can be 1, 2, 3, 4
     if split > parts:
         raise ValueError("`split` should be less or equal to `parts`")
 
