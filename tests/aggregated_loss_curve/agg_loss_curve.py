@@ -425,6 +425,7 @@ if __name__ == '__main__':
     eps_lst = np.arange(-deviation, deviation, step)
 
     # parse arguments
+    parser = set_parse()
     args = parser.parse_args()
     parts = args.parts
     split = args.split # [1, parts], for parts=4, can be 1, 2, 3, 4
