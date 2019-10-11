@@ -1,7 +1,7 @@
 import os
 import sys
-sys.path.insert(0, '/viscompfs/users/sawang/temp/monodepth2/tests/')
-sys.path.insert(0, '/viscompfs/users/sawang/temp/monodepth2/')
+sys.path.insert(0, '/viscompfs/users/tedyu/monodepth2/tests/')
+sys.path.insert(0, '/viscompfs/users/tedyu/monodepth2/')
 import random
 import numpy as np
 import torch
@@ -372,12 +372,13 @@ def run_test(frame_t,
 
     # generate loss curve for all samples with square/deformed patch
     with torch.no_grad():
-        r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
-        #r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
+        #r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
+        r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
 
     # dump r_x_min containing (pixel location, absolute depth error) 
     #dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve, root['dump'])
-    dump_result(frame_t, r_square_min, r_square_curve, root['dump'], 'square')
+    #dump_result(frame_t, r_square_min, r_square_curve, root['dump'], 'square')
+    dump_result(frame_t, r_deform_min, r_deform_curve, root['dump'], 'deform')
 
 def dump_result(frame_t, r_min, r_curve, dump_root, type_name):
     scene, tgt, src = frame_t
