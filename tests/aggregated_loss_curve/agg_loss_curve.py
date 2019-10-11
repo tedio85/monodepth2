@@ -1,7 +1,7 @@
 import os
 import sys
-sys.path.insert(0, '../')
-sys.path.insert(0, '../../')
+sys.path.insert(0, '/viscompfs/users/sawang/temp/monodepth2/tests/')
+sys.path.insert(0, '/viscompfs/users/sawang/temp/monodepth2/')
 import random
 import numpy as np
 import torch
@@ -238,13 +238,13 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
     for patch_size in psize_list[1:]: # skip patch size=1
         patch_size_idx = psize_list.index(patch_size)
 
-        for sample_idx, (_, _, y, x) in enumerate(samples):
+        for sample_idx, (_, _, y, x) in enumerate(samples.cpu().numpy()):
             min_pt = min_point_idx[0, patch_size_idx, sample_idx].cpu().numpy()
             min_ph = min_patch_idx[0, patch_size_idx, sample_idx].cpu().numpy()
             min_pt_value = min_point_loss[0, patch_size_idx, sample_idx].cpu().numpy()
             min_ph_value = min_patch_loss[0, patch_size_idx, sample_idx].cpu().numpy()
-            point_t = ((x, y), eps_lst[min_pt], min_pt_value)
-            patch_t = ((x, y), eps_lst[min_ph], min_ph_value)
+            point_t = ((x, y), eps_lst[min_pt], float(min_pt_value))
+            patch_t = ((x, y), eps_lst[min_ph], float(min_ph_value))
             ret_min_pts[patch_size].append(point_t)
             ret_min_patch[patch_size].append(patch_t) 
 
@@ -336,7 +336,7 @@ def test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step):
     for patch_size in psize_list[1:]: # skip patch size=1
         patch_size_idx = psize_list.index(patch_size)
 
-        for sample_idx, (_, _, y, x) in enumerate(samples):
+        for sample_idx, (_, _, y, x) in enumerate(samples.cpu().numpy()):
             min_pt = min_point_idx[0, patch_size_idx, sample_idx].cpu().numpy()
             min_ph = min_patch_idx[0, patch_size_idx, sample_idx].cpu().numpy()
             min_pt_value = min_point_loss[0, patch_size_idx, sample_idx].cpu().numpy()
@@ -373,33 +373,27 @@ def run_test(frame_t,
     # generate loss curve for all samples with square/deformed patch
     with torch.no_grad():
         r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
-        r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
+        #r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
 
     # dump r_x_min containing (pixel location, absolute depth error) 
-    dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve, root['dump'])
+    #dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve, root['dump'])
+    dump_result(frame_t, r_square_min, r_square_curve, root['dump'], 'square')
 
-
-def dump_result(frame_t, r_square_min, r_deform_min, r_square_curve, r_deform_curve, dump_root):
+def dump_result(frame_t, r_min, r_curve, dump_root, type_name):
     scene, tgt, src = frame_t
     dir_path = os.path.join(dump_root, scene)
     if not os.path.exists(dir_path):
         os.mkdir(dir_path)
         
-    file_path = os.path.join(dir_path, '{}_{}'.format(tgt, src))
+    file_path = os.path.join(dir_path, '{}_{}_{}'.format(tgt, src, type_name))
     
     record_dict = dict()
-    record_dict['square_pt'] = r_square_min[0]
-    #record_dict['deform_pt'] = r_deform_min[0]
-    record_dict['square_curve_pt'] = r_square_curve[0]
-    #record_dict['deform_curve_pt'] = r_deform_curve[0]
-
-    record_dict['square_patch'] = r_square_min[1]
-    #record_dict['deform_patch'] = r_deform_min[1]
-    record_dict['square_curve_patch'] = r_square_curve[1]
-    #record_dict['deform_curve_patch'] = r_deform_curve[1]
+    record_dict['{}_pt'.format(type_name)] = r_min[0]
+    record_dict['{}_curve_pt'.format(type_name)] = r_curve[0]
+    record_dict['{}_patch'.format(type_name)] = r_min[1]
+    record_dict['{}_curve_patch'.format(type_name)] = r_curve[1]
     
-
-    np.savez(file_path, record_dict)
+    np.save(file_path, record_dict)
 
 
 if __name__ == '__main__':
@@ -439,7 +433,6 @@ if __name__ == '__main__':
                                layers,
                                psize_list,
                                deviation, step, root, n_samples=n_samples)
-    
         if i % log_iter == 0:
             toc = time.time()
             print('Frame {}/{}, {}s/it'.format(i+1, len(frame_list), (toc-tic)/log_iter))
