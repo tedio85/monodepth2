@@ -191,7 +191,20 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
         tgt_patches = tgt_patches_ori.clone()
         src_patches = sampled_intensity(samples_xy, warped, psize_list[-1])
 
-        for patch_size in psize_list[::-1]:
+        # calculate loss 
+        abs_diff = torch.abs(frame['tgt'] - warped)
+        l1_loss = abs_diff.mean(1, True)
+        
+        # calculate l1 point loss for samples
+        norm_x = samples_xy[..., 0].to(torch.float) / float(width - 1)
+        norm_y = samples_xy[..., 1].to(torch.float) / float(height - 1)
+        grid = (torch.stack([norm_x, norm_y], 1) - 0.5) * 2
+        grid = grid.unsqueeze(0).unsqueeze(2)
+        l1_loss_point = F.grid_sample(l1_loss, grid, padding_mode="border").squeeze(-1)
+        loss_tensor_point[:, eps_idx, 0, :] = l1_loss_point
+        loss_tensor_patch[:, eps_idx, 0, :] = l1_loss_point
+
+        for patch_size in psize_list[:0:-1]:
             # crop patches
             prev_patch_size = tgt_patches.shape[-1]
             ctr = get_ofs(prev_patch_size, dilation=1) # old center index
@@ -199,24 +212,11 @@ def test_square_patch(samples, frame, layers, psize_list, gt_deviation, step):
             tgt_patches = tgt_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
             src_patches = src_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
 
-            # calculate loss 
-            abs_diff = torch.abs(frame['tgt'] - warped)
-            l1_loss = abs_diff.mean(1, True)
-            if patch_size == 1:
-                grid = torch.zeros_like(samples_xy)
-                grid[..., 0] = samples_xy[..., 0] / (width - 1)
-                grid[..., 1] = samples_xy[..., 1] / (height - 1)
-                grid = grid.unsqueeze(0).unsqueeze(2)
-                loss = F.grid_sample(l1_loss, grid.to(torch.float), padding_mode="border").squeeze(-1)
-                loss_point, loss_patch = loss, loss
-            else:
-                l1 = torch.abs(src_patches - tgt_patches)
-                center = int((patch_size - 1) / 2)
-                l1_loss_point = l1[:, :, :, center, center].mean(1, True) #[B, 1, N]
-                l1_loss_patch = l1.mean(4).mean(3).mean(1, True)
-                dssim = ssim_patch_sampled_pts(tgt_patches, src_patches) #[B, 1, N]
-                loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
-                loss_patch = 0.15 * l1_loss_patch + 0.85 * dssim # [B, 1, N]
+            l1 = torch.abs(src_patches - tgt_patches)
+            l1_loss_patch = l1.mean(4).mean(3).mean(1, True)
+            dssim = ssim_patch_sampled_pts(tgt_patches, src_patches) #[B, 1, N]
+            loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
+            loss_patch = 0.15 * l1_loss_patch + 0.85 * dssim # [B, 1, N]
 
             # log loss
             # stack ordered according to patch size from small to large
