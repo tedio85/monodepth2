@@ -388,7 +388,7 @@ def run_test(frame_t,
         if type_name == 'square' or type_name == 'both':
             r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
             dump_result(frame_t, r_square_min, r_square_curve, root['dump'], 'square')
-        elif type_name == 'deform' or type_name == 'both':
+        if type_name == 'deform' or type_name == 'both':
             r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
             dump_result(frame_t, r_deform_min, r_deform_curve, root['dump'], 'deform')
         
