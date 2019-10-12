@@ -459,12 +459,15 @@ if __name__ == '__main__':
     for i, frame_t in enumerate(partition, start):
         frame = load_data(frame_t, root, img_w, img_h)
         frame = data_to_device_tensor(frame)
-        if i != 3032:
+        try:
             agg_results = run_test(frame_t,
                                    frame,
                                    layers,
                                    psize_list,
                                    deviation, step, root, args.type_name, n_samples=n_samples)
+        except:
+            print('Experiment at', frame_t, 'failed')
+
         if i % log_iter == 0:
             toc = time.time()
             print('Frame {}/{}, {}s/it'.format(i+1, len(frame_list), (toc-tic)/log_iter))
