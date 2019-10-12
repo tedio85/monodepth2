@@ -29,7 +29,7 @@ def set_parse():
     parser.add_argument('--parts', default=4, help='the number of partitions the dataset is divided into')
     parser.add_argument('--split', default=-1, help='Which partition will this application be responsible for' + \
                                                       'should be an integer raning from 1~parts, -1 denotes the entire dataset')
-    parser.add_argument('--type_name', default='square', help="square or deform")
+    parser.add_argument('--type_name', default='both', help="square/deform/both")
     return parser
 
 def read_pair_list(pair_path):
@@ -385,16 +385,13 @@ def run_test(frame_t,
 
     # generate loss curve for all samples with square/deformed patch
     with torch.no_grad():
-        if type_name == 'square':
+        if type_name == 'square' or type_name == 'both':
             r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, gt_deviation, step)
-        elif type_name == 'deform':
+            dump_result(frame_t, r_square_min, r_square_curve, root['dump'], 'square')
+        elif type_name == 'deform' or type_name == 'both':
             r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, gt_deviation, step)
-
-    # dump r_x_min containing (pixel location, absolute depth error) 
-    if type_name == 'square':
-        dump_result(frame_t, r_square_min, r_square_curve, root['dump'], 'square')
-    elif type_name == 'deform':
-        dump_result(frame_t, r_deform_min, r_deform_curve, root['dump'], 'deform')
+            dump_result(frame_t, r_deform_min, r_deform_curve, root['dump'], 'deform')
+        
     return 
 
 def dump_result(frame_t, r_min, r_curve, dump_root, type_name):
@@ -436,6 +433,7 @@ if __name__ == '__main__':
     split = int(args.split) # [1, parts], for parts=4, can be 1, 2, 3, 4
     if split > parts:
         raise ValueError("`split` should be less or equal to `parts`")
+    print('Experiment type: {}'.format(args.type_name))
 
     # set random seed
     seed = 732
