@@ -170,7 +170,7 @@ def form_meshgrid(samples, patch_size, dilation=1):
 
     return mesh
 
-def sampled_intensity(samples, img, patch_size):
+def sampled_intensity(samples, img, patch_size, dilation):
     """Use to sample intensities at target and source images at corresponding patch
         locations in the square patch experiment
     Args:
@@ -182,14 +182,15 @@ def sampled_intensity(samples, img, patch_size):
     """
     _, _, height, width = img.shape
     n_samples = samples.shape[0]
-    mesh = form_meshgrid(samples, patch_size, dilation=1).to(torch.float) # [1, n_samples, patch_size*patch_size, 2] 
-    
+    mesh = form_meshgrid(samples, patch_size, dilation=dilation).to(torch.float) # [1, n_samples, patch_size*patch_size, 2] 
+
     mesh[..., 0] /= (width - 1)
     mesh[..., 1] /= (height - 1)
     mesh = (mesh - 0.5) * 2
 
     intensities = F.grid_sample(img, mesh, mode='nearest', padding_mode='border') # [1, 3, n_samples, patch_size*patch_size]
     intensities = intensities.view(1, 3, n_samples, patch_size, patch_size)
+    
     return intensities
 
 def compute_sampled_homography(samples, K, cam_coords,
@@ -263,9 +264,10 @@ def sampled_patch_center_loss(samples, tgt_img, src_img,
 
     # unfold cam_coords at sampled locations
     patch_coords = []
+    dil = dilation
     for y, x in samples:
         if ofs>=0:
-            coords = cam_coords[:, :, y-ofs:y+ofs+1, x-ofs:x+ofs+1] # [B, 3, patch_size, patch_size]
+            coords = cam_coords[:, :, y-ofs:y+ofs+1:dil, x-ofs:x+ofs+1:dil] # [B, 3, patch_size, patch_size]
             coords = coords.contiguous().view(batch, 3, -1) # [B, 3, patch_size*patch_size]
             patch_coords.append(coords)
     patch_coords = torch.stack(patch_coords, dim=-1) # [B, 3, patch_size*patch_size, n_samples]
@@ -288,10 +290,5 @@ def sampled_patch_center_loss(samples, tgt_img, src_img,
     # grid sample
     patch_intensities = F.grid_sample(src_img, warped_coords, padding_mode='border') # [B, 3, n_samples, patch_size*patch_size]
     patch_intensities = patch_intensities.view(batch, 3, n_samples, patch_size, patch_size)
-
-    return patch_intensities, ret_coords
-
-
-
-
     
+    return patch_intensities, ret_coords

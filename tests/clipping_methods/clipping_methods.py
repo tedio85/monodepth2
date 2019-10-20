@@ -196,21 +196,25 @@ def clip_percentage(loss, c_min, c_max):
 
     return clipped_min_max, n_remain
 
-def test_square_patch(samples, frame, layers, psize_list, thresh_list, gt_deviation, step):
+def test_square_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step):
     batch, _, height, width = frame['tgt'].shape 
+    patch_size, dilation = patch_config
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
     gt_depth = frame['depth']
     inv_K = torch.inverse(frame['K'])
     K_4x4 = enlarge_K(frame['K'])
+    n_samples = samples.shape[0]
     
     ## contruct sample_xy, [n_samples, 2], each entry is (col, row) = [x, y]
     samples_xy = torch.ones_like(samples[:, :2])
     samples_xy[:, 0], samples_xy[:, 1] = samples[:, 3], samples[:, 2]
 
-    tgt_patches_ori = sampled_intensity(samples_xy, frame['tgt'], psize_list[-1])
+    tgt_patches = sampled_intensity(samples_xy, frame['tgt'],
+                                    patch_size=patch_size,
+                                    dilation=dilation)
 
-    loss_tensor_point = torch.zeros([batch, len(eps_lst), len(psize_list), len(thresh_list), n_samples])
-    loss_tensor_patch = torch.zeros([batch, len(eps_lst), len(psize_list), len(thresh_list), n_samples])
+    loss_tensor_point = torch.zeros([batch, len(eps_lst), len(thresh_list)])
+    loss_tensor_patch = torch.zeros([batch, len(eps_lst), len(thresh_list)])
     for eps_idx, eps in enumerate(eps_lst):
         depth = gt_depth + eps
         cam_points = layers['backproject_depth'](depth, inv_K)
@@ -222,8 +226,7 @@ def test_square_patch(samples, frame, layers, psize_list, thresh_list, gt_deviat
 
         # unfold image to generate patches
         # shape [1, 3, n_samples, patch_size, patch_size]
-        tgt_patches = tgt_patches_ori.clone()
-        src_patches = sampled_intensity(samples_xy, warped, psize_list[-1])
+        src_patches = sampled_intensity(samples_xy, warped, patch_size, dilation)
 
         # calculate loss 
         abs_diff = torch.abs(frame['tgt'] - warped)
@@ -235,73 +238,47 @@ def test_square_patch(samples, frame, layers, psize_list, thresh_list, gt_deviat
         grid = (torch.stack([norm_x, norm_y], 1) - 0.5) * 2
         grid = grid.unsqueeze(0).unsqueeze(2)
         l1_loss_point = F.grid_sample(l1_loss, grid, padding_mode="border").squeeze(-1)
-        loss_tensor_point[:, eps_idx, 0, :] = l1_loss_point
-        loss_tensor_patch[:, eps_idx, 0, :] = l1_loss_point
 
-        for patch_size in psize_list[:0:-1]:
-            # crop patches
-            prev_patch_size = tgt_patches.shape[-1]
-            ctr = get_ofs(prev_patch_size, dilation=1) # old center index
-            ofs = get_ofs(patch_size, dilation=1)      # offset for new patch size
-            tgt_patches = tgt_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
-            src_patches = src_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
 
-            l1 = torch.abs(src_patches - tgt_patches)
-            l1_loss_patch = l1.mean(4).mean(3).mean(1, True)
-            dssim = ssim_patch_sampled_pts(tgt_patches, src_patches) #[B, 1, N]
-            loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
-            loss_patch = 0.15 * l1_loss_patch + 0.85 * dssim # [B, 1, N]
+        l1 = torch.abs(src_patches - tgt_patches) # patch l1 difference 
+        l1_loss_patch = l1.mean(4).mean(3).mean(1, True) 
+        dssim = ssim_patch_sampled_pts(tgt_patches, src_patches) #[B, 1, N]
+        loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
+        loss_patch = 0.15 * l1_loss_patch + 0.85 * dssim # [B, 1, N]
 
-            for tid, (clip_min, clip_max) in enumerate(thresh_list):
-                clipped_loss_point, n_point = clip_percentage(loss_point, clip_min, clip_max)
-                clipped_loss_patch, n_patch = clip_percentage(loss_patch, clip_min, clip_max)
-                if run_single_image:
-                    fig = plt.figure(figsize=(15, 10))
-                    ax1 = fig.add_subplot(121)
-                    ax1.imshow(clipped_loss_point)
-                    ax2 = fig.add_subplot(122)
-                    ax2.imshow(clipped_loss_patch)
-                    plt.show()
+        for tid, (clip_min, clip_max) in enumerate(thresh_list):
+            # [B, 1, N], scalar
+            clipped_loss_point, n_point = clip_percentage(loss_point, clip_min, clip_max)
+            clipped_loss_patch, n_patch = clip_percentage(loss_patch, clip_min, clip_max)
 
-                # log loss
-                # stack ordered according to patch size from small to large
-                patch_size_idx = psize_list.index(patch_size) 
-                loss_tensor_point[:, eps_idx, patch_size_idx, tid, :] = loss_point
-                loss_tensor_patch[:, eps_idx, patch_size_idx, tid, :] = loss_patch
+            # log loss
+            loss_tensor_point[:, eps_idx, tid] = clipped_loss_point.sum(dim=-1) / n_point
+            loss_tensor_patch[:, eps_idx, tid] = clipped_loss_patch.sum(dim=-1) / n_patch
 
-    # take minimums and corresponding eps
-    #min_point_loss, min_point_idx = torch.min(loss_tensor_point, dim=1) # [B, n_size, n_thresh, n_samples]
-    #min_patch_loss, min_patch_idx = torch.min(loss_tensor_patch, dim=1) # [B, n_size, n_thresh, n_samples]
+            # show figure
+            if run_single_image:
+                fig = plt.figure(figsize=(15, 10))
+                ax1 = fig.add_subplot(121)
+                ax1.imshow(clipped_loss_point)
+                ax1.set_title('Clipped Loss Point for ({}, {})'.format(c_min, c_max))
+                ax1.axis('off')
+                ax2 = fig.add_subplot(122)
+                ax2.imshow(clipped_loss_patch)
+                ax2.set_title('Clipped Loss Patch for ({}, {})'.format(c_min, c_max))
+                ax2.axis('off')
+                plt.show()
 
-    # calculate mean curve
-    mean_point_loss = torch.mean(loss_tensor_point, dim=-1) #[batch, len(eps_lst), len(psize_list), len(thresh_list)]
-    mean_patch_loss = torch.mean(loss_tensor_patch, dim=-1) #[batch, len(eps_lst), len(psize_list), len(thresh_list)]
-
-    # generate dictionaries
-    ret_min_pts, ret_min_patch = defaultdict(list), defaultdict(list)
+    # create curve
     ret_curve_pts, ret_curve_patch = dict(), dict()
-    for patch_size in psize_list: 
-        patch_size_idx = psize_list.index(patch_size)
+    for tid, (c_min, c_max) in enumerate(thresh_list):
+        ret_curve_pts[(patch_config, (c_min, c_max))] = loss_tensor_point[0, :, tid].cpu().numpy()
+        ret_curve_patch[(patch_config, (c_min, c_max))] = loss_tensor_patch[0, :, tid].cpu().numpy()
 
-    #     for sample_idx, (_, _, y, x) in enumerate(samples.cpu().numpy()):
-    #         min_pt = min_point_idx[0, patch_size_idx, sample_idx].cpu().numpy()
-    #         min_ph = min_patch_idx[0, patch_size_idx, sample_idx].cpu().numpy()
-    #         min_pt_value = min_point_loss[0, patch_size_idx, sample_idx].cpu().numpy()
-    #         min_ph_value = min_patch_loss[0, patch_size_idx, sample_idx].cpu().numpy()
-    #         point_t = ((x, y), eps_lst[min_pt], float(min_pt_value))
-    #         patch_t = ((x, y), eps_lst[min_ph], float(min_ph_value))
-    #         ret_min_pts[patch_size].append(point_t)
-    #         ret_min_patch[patch_size].append(patch_t) 
-
-        # create curve
-        for tid, (c_min, c_max) in enumerate(thresh_list):
-            ret_curve_pts[(patch_size, (c_min, c_max))] = mean_point_loss[0, :, patch_size_idx, tid].cpu().numpy()
-            ret_curve_patch[(patch_size, (c_min, c_max))] = mean_patch_loss[0, :, patch_size_idx, tid].cpu().numpy()
-
-    return (ret_min_pts, ret_min_patch), (ret_curve_pts, ret_curve_patch)
+    return (ret_curve_pts, ret_curve_patch)
         
-def test_deform_patch(samples, frame, layers, psize_list, thresh_list, gt_deviation, step):
+def test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step):
     batch = frame['tgt'].shape[0]
+    patch_size, dilation = patch_config
     eps_lst = np.arange(-gt_deviation, gt_deviation, step)
     gt_depth = frame['depth']
     inv_K = torch.inverse(frame['K'])
@@ -311,21 +288,17 @@ def test_deform_patch(samples, frame, layers, psize_list, thresh_list, gt_deviat
     samples_xy = torch.ones_like(samples[:, :2])
     samples_xy[:, 0], samples_xy[:, 1] = samples[:, 3], samples[:, 2]
 
-    loss_tensor_point = torch.zeros([batch, len(eps_lst), len(psize_list), len(thresh_list), n_samples])
-    loss_tensor_patch = torch.zeros([batch, len(eps_lst), len(psize_list), len(thresh_list), n_samples])
-    # fill patch size=1 locations with constants
-    loss_tensor_point[:, :, 0, :] = 1e6 
-    loss_tensor_patch[:, :, 0, :] = 1e6
+    loss_tensor_point = torch.zeros([batch, len(eps_lst), len(thresh_list)])
+    loss_tensor_patch = torch.zeros([batch, len(eps_lst), len(thresh_list)])
 
     # generate target patches, shape [1, 3, n_samples, patch_size, patch_size]
-    tgt_patches_ori = sampled_intensity(samples_xy, frame['tgt'], psize_list[-1])
+    tgt_patches = sampled_intensity(samples_xy, frame['tgt'], 
+                                    patch_size=patch_size,
+                                    dilation=dilation)
 
     for eps_idx, eps in enumerate(eps_lst):
         depth = gt_depth + eps
         cam_points = layers['backproject_depth'](depth, inv_K)
-
-        # copy target patches
-        tgt_patches = tgt_patches_ori.clone()
 
         # generate source patches by warping with the largest patch size
         # shape [1, 3, n_samples, patch_size, patch_size]
@@ -338,81 +311,54 @@ def test_deform_patch(samples, frame, layers, psize_list, thresh_list, gt_deviat
                                     frame['pose'],
                                     depth,
                                     frame['norm'],
-                                    patch_size=psize_list[-1], # largest patch size
-                                    dilation=1)
+                                    patch_size=patch_size, 
+                                    dilation=dilation)
         
-        for patch_size in psize_list[::-1][:-1]: # skip patch size=1
-            # crop patches
-            prev_patch_size = tgt_patches.shape[-1]
-            ctr = get_ofs(prev_patch_size, dilation=1) # old center index
-            ofs = get_ofs(patch_size, dilation=1)      # offset for new patch size
-            tgt_patches = tgt_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
-            src_patches = src_patches[:, :, :, ctr-ofs:ctr+ofs+1, ctr-ofs:ctr+ofs+1]
-
-            # compute loss
-            l1_loss_patch = torch.abs(tgt_patches - src_patches).mean(1, True) # [B, 1, n_samples, patch_size, patch_size]
-            l1_loss_point= l1_loss_patch[:, :, :, ofs, ofs] # [B, 1, n_samples]
-            dssim = ssim_patch_sampled_pts(tgt_patches, src_patches)
-            loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
-            loss_patch = 0.15 * l1_loss_patch.mean(dim=(3, 4)) + 0.85 * dssim # [B, 1, N]
+        # compute loss
+        l1_loss_patch = torch.abs(tgt_patches - src_patches).mean(1, True) # [B, 1, n_samples, patch_size, patch_size]
+        l1_loss_point= l1_loss_patch[:, :, :, ofs, ofs] # [B, 1, n_samples]
+        dssim = ssim_patch_sampled_pts(tgt_patches, src_patches)
+        loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
+        loss_patch = 0.15 * l1_loss_patch.mean(dim=(3, 4)) + 0.85 * dssim # [B, 1, N]
             
-            for tid, (clip_min, clip_max) in enumerate(thresh_list):
-                clipped_loss_point, n_point = clip_percentage(loss_point, clip_min, clip_max)
-                clipped_loss_patch, n_patch = clip_percentage(loss_patch, clip_min, clip_max)
-                if run_single_image:
-                    fig = plt.figure(figsize=(15, 10))
-                    ax1 = fig.add_subplot(121)
-                    ax1.imshow(clipped_loss_point)
-                    ax2 = fig.add_subplot(122)
-                    ax2.imshow(clipped_loss_patch)
-                    plt.show()
+        for tid, (clip_min, clip_max) in enumerate(thresh_list):
+            clipped_loss_point, n_point = clip_percentage(loss_point, clip_min, clip_max)
+            clipped_loss_patch, n_patch = clip_percentage(loss_patch, clip_min, clip_max)
 
-                # log loss
-                # stack ordered according to patch size from small to large
-                patch_size_idx = psize_list.index(patch_size) 
-                loss_tensor_point[:, eps_idx, patch_size_idx, tid, :] = loss_point
-                loss_tensor_patch[:, eps_idx, patch_size_idx, tid, :] = loss_patch
+            # log loss
+            loss_tensor_point[:, eps_idx, tid] = clipped_loss_point.sum(dim=-1) / n_point
+            loss_tensor_patch[:, eps_idx, tid] = clipped_loss_patch.sum(dim=-1) / n_patch
 
-    # take minimums and corresponding eps
-    #min_point_loss, min_point_idx = torch.min(loss_tensor_point, dim=1) # [B, n_size, n_thresh, n_samples]
-    #min_patch_loss, min_patch_idx = torch.min(loss_tensor_patch, dim=1) # [B, n_size, n_thresh, n_samples]
+            # show figure
+            if run_single_image:
+                fig = plt.figure(figsize=(15, 10))
+                ax1 = fig.add_subplot(121)
+                ax1.imshow(clipped_loss_point)
+                ax1.set_title('Clipped Loss Point for ({}, {})'.format(c_min, c_max))
+                ax1.axis('off')
+                ax2 = fig.add_subplot(122)
+                ax2.imshow(clipped_loss_patch)
+                ax2.set_title('Clipped Loss Patch for ({}, {})'.format(c_min, c_max))
+                ax2.axis('off')
+                plt.show()
 
-    # calculate mean curve
-    mean_point_loss = torch.mean(loss_tensor_point, dim=-1) #[batch, len(eps_lst), len(psize_list), len(thresh_list)]
-    mean_patch_loss = torch.mean(loss_tensor_patch, dim=-1) #[batch, len(eps_lst), len(psize_list), len(thresh_list)]
-
-    # generate dictionaries
-    ret_min_pts, ret_min_patch = defaultdict(list), defaultdict(list)
+    # create curve
     ret_curve_pts, ret_curve_patch = dict(), dict()
-    for patch_size in psize_list[1:]: # skip patch size=1
-        patch_size_idx = psize_list.index(patch_size)
+    for tid, (c_min, c_max) in enumerate(thresh_list):
+        ret_curve_pts[(patch_config, (c_min, c_max))] = loss_tensor_point[0, :, tid].cpu().numpy()
+        ret_curve_patch[(patch_config, (c_min, c_max))] = loss_tensor_patch[0, :, tid].cpu().numpy()
 
-        # for sample_idx, (_, _, y, x) in enumerate(samples.cpu().numpy()):
-        #     min_pt = min_point_idx[0, patch_size_idx, sample_idx].cpu().numpy()
-        #     min_ph = min_patch_idx[0, patch_size_idx, sample_idx].cpu().numpy()
-        #     min_pt_value = min_point_loss[0, patch_size_idx, sample_idx].cpu().numpy()
-        #     min_ph_value = min_patch_loss[0, patch_size_idx, sample_idx].cpu().numpy()
-        #     point_t = ((x, y), frame['norm'][0, :, y, x].cpu().numpy(), eps_lst[min_pt], float(min_pt_value))
-        #     patch_t = ((x, y), frame['norm'][0, :, y, x].cpu().numpy(), eps_lst[min_ph], float(min_ph_value))
-        #     ret_min_pts[patch_size].append(point_t)
-        #     ret_min_patch[patch_size].append(patch_t) 
-
-        # create curve
-        for tid, (c_min, c_max) in enumerate(thresh_list):
-            ret_curve_pts[(patch_size, (c_min, c_max))] = mean_point_loss[0, :, patch_size_idx, tid].cpu().numpy()
-            ret_curve_patch[(patch_size, (c_min, c_max))] = mean_patch_loss[0, :, patch_size_idx, tid].cpu().numpy()
-
-    return (ret_min_pts, ret_min_patch), (ret_curve_pts, ret_curve_patch)
+    return (ret_curve_pts, ret_curve_patch)
 
 def run_test(frame_t,
              frame,
              layers,
-             psize_list,
+             patch_config,
              thresh_list,
              gt_deviation, step, root, type_name):
     # randomly sample pixels in the valid region
-    psize_max, dil = psize_list[-1]
-    ofs_max = get_ofs(psize_max, dilation=dil)
+    patch_size, dilation = patch_config
+    ofs_max = get_ofs(patch_size, dilation=dilation)
     frame['mask'][:, :, 0:ofs_max, :] = 0 # up
     frame['mask'][:, :, -ofs_max:, :] = 0 # down
     frame['mask'][:, :, :, 0:ofs_max] = 0 # left
@@ -420,21 +366,21 @@ def run_test(frame_t,
     
     valid_idxs = frame['mask'].nonzero()
     samples = valid_idxs
-
+    
     # generate loss curve for all samples with square/deformed patch
     with torch.no_grad():
         if type_name == 'square' or type_name == 'both':
-            r_square_min, r_square_curve = test_square_patch(samples, frame, layers, psize_list, thresh_list, gt_deviation, step)
+            r_square_curve = test_square_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step)
             if not run_single_image:
-                dump_result(frame_t, r_square_min, r_square_curve, root['dump'], 'square')
+                dump_result(frame_t, r_square_curve, root['dump'], 'square')
 
         if type_name == 'deform' or type_name == 'both':
-            r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, psize_list, thresh_list, gt_deviation, step)
+            r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step)
             if not run_single_image:
-                dump_result(frame_t, r_deform_min, r_deform_curve, root['dump'], 'deform')
+                dump_result(frame_t, r_deform_curve, root['dump'], 'deform')
     return 
 
-def dump_result(frame_t, r_min, r_curve, dump_root, type_name):
+def dump_result(frame_t, r_curve, dump_root, type_name):
     scene, tgt, src = frame_t
     dir_path = os.path.join(dump_root, scene)
     if not os.path.exists(dir_path):
@@ -443,9 +389,7 @@ def dump_result(frame_t, r_min, r_curve, dump_root, type_name):
     file_path = os.path.join(dir_path, '{}_{}_{}'.format(tgt, src, type_name))
     
     record_dict = dict()
-    record_dict['{}_pt'.format(type_name)] = r_min[0]
     record_dict['{}_curve_pt'.format(type_name)] = r_curve[0]
-    record_dict['{}_patch'.format(type_name)] = r_min[1]
     record_dict['{}_curve_patch'.format(type_name)] = r_curve[1]
     
     np.save(file_path, record_dict)
@@ -460,13 +404,13 @@ if __name__ == '__main__':
     root['gt'] = "/viscompfs/users/sawang/ScanNet/data_gt"
     root['pose'] = "/viscompfs/users/sawang/ScanNet/data_pose"
     root['depth'] = "/viscompfs/users/sawang/ScanNet/data/scans"
-    root['dump'] = "/viscompfs/users/sawang/ScanNet/analysis"
+    root['dump'] = "/viscompfs/users/sawang/ScanNet/analysis_clip_params"
     img_w, img_h = 320, 240
     deviation = 0.2
     step = 5e-3
-    psize_list = [(5, 4)] # (patch_size, dilation)
+    patch_config = (5, 4) # (patch_size, dilation)
     eps_lst = np.arange(-deviation, deviation, step)
-    clip_min_list = [10, 20, 30, 40, 50]
+    clip_min_list = [0, 10, 20, 30, 40, 50]
     clip_max_list = [60, 70, 80, 90, 100]
     thresh_list = np.array(np.meshgrid(clip_min_list, clip_max_list)).T.reshape(-1, 2)
     
@@ -474,11 +418,13 @@ if __name__ == '__main__':
     # parse arguments
     parser = set_parse()
     args = parser.parse_args()
+    type_name = args.type_name
     parts = int(args.parts)
     split = int(args.split) # [1, parts], for parts=4, can be 1, 2, 3, 4
     if split > parts:
         raise ValueError("`split` should be less or equal to `parts`")
     print('Experiment type: {}'.format(args.type_name))
+    
 
     # set random seed
     seed = 732
@@ -506,11 +452,11 @@ if __name__ == '__main__':
         frame = data_to_device_tensor(frame)
         try:
             agg_results = run_test(frame_t,
-                                   frame,
-                                   layers,
-                                   psize_list,
-                                   thresh_list,
-                                   deviation, step, root, args.type_name)
+                                frame,
+                                layers,
+                                patch_config,
+                                thresh_list,
+                                deviation, step, root, type_name)
             if run_single_image:
                 input("Press Enter to continue...")
         except:
