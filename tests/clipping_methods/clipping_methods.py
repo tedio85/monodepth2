@@ -18,9 +18,9 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.pyplot import cm
 from matplotlib import collections as mc
-import pdb
+#import pdb
 import time
-import seaborn as sns
+#import seaborn as sns
 
 def set_parse():
     """Set arguments for parser"""
