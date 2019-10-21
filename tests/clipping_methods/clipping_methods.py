@@ -16,6 +16,7 @@ from layers import *
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.pyplot import cm
 from matplotlib import collections as mc
 import pdb
 import time
@@ -297,9 +298,10 @@ def test_square_patch(samples, frame, layers, patch_config, thresh_list, gt_devi
         ax1 = fig.add_subplot(121)
         ax2 = fig.add_subplot(122)
         
+        color=cm.rainbow(np.linspace(0, 1, len(thresh_list)))
         for tid, (c_min, c_max) in enumerate(thresh_list):
-            ax1.plot(eps_lst, ret_curve_pts[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
-            ax2.plot(eps_lst, ret_curve_patch[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
+            ax1.plot(eps_lst, ret_curve_pts[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max), c=color[tid])
+            ax2.plot(eps_lst, ret_curve_patch[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max), c=color[tid])
         
         ax1.legend()
         ax2.legend()
@@ -380,9 +382,10 @@ def test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_devi
         ax1 = fig.add_subplot(121)
         ax2 = fig.add_subplot(122)
         
+        color=cm.rainbow(np.linspace(0, 1, len(thresh_list)))
         for tid, (c_min, c_max) in enumerate(thresh_list):
-            ax1.plot(eps_lst, ret_curve_pts[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
-            ax2.plot(eps_lst, ret_curve_patch[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
+            ax1.plot(eps_lst, ret_curve_pts[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max), c=color[tid])
+            ax2.plot(eps_lst, ret_curve_patch[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max), c=color[tid])
         
         ax1.legend()
         ax2.legend()
