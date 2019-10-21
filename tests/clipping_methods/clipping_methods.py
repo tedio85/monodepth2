@@ -19,6 +19,7 @@ import matplotlib.patches as patches
 from matplotlib import collections as mc
 import pdb
 import time
+import seaborn as sns
 
 def set_parse():
     """Set arguments for parser"""
@@ -187,7 +188,7 @@ def clip_percentage(loss, c_min, c_max):
     """
     batch, _, n_samples = loss.shape
     min_k = int(n_samples * (c_min / 100))
-    max_k = int(n_samples * (c_max / 100))
+    max_k = int(n_samples * ((100-c_max) / 100))
     _, min_idxs = torch.topk(loss, min_k, dim=-1, largest=False)
     _, max_idxs = torch.topk(loss, max_k, dim=-1, largest=True)
     clipped_min = loss.scatter(-1, min_idxs, 0)
@@ -195,6 +196,30 @@ def clip_percentage(loss, c_min, c_max):
     n_remain = n_samples - min_k - max_k
 
     return clipped_min_max, n_remain
+
+def generate_plot(samples_xy, loss):
+    """Given torch.cuda.tensor, return a [H, W, 1] loss map of type numpy array """
+    ret = np.zeros([img_h, img_w])
+    loss_np = loss.cpu().numpy()
+    for i, (x, y) in enumerate(samples_xy.cpu().numpy()):
+        ret[y, x] = loss_np[0, 0, i]
+    
+    return ret
+    
+def show_loss_map(samples_xy, loss_point, loss_patch, plot_title):
+    """loss_point, loss_patch both [B, 1, N]"""
+    fig = plt.figure(figsize=(16, 24))
+    ax1 = fig.add_subplot(211)
+    #ax1.imshow(generate_plot(samples_xy, loss_point))
+    sns.heatmap(generate_plot(samples_xy, loss_point), vmin=0, vmax=1, ax=ax1)
+    ax1.set_title(plot_title + '(Point)')
+    ax1.axis('off')
+    ax2 = fig.add_subplot(212)
+    #ax2.imshow(generate_plot(samples_xy, loss_patch))
+    sns.heatmap(generate_plot(samples_xy, loss_patch), vmin=0, vmax=1, ax=ax2)
+    ax2.set_title(plot_title + '(Patch)')
+    ax2.axis('off')
+    plt.show()
 
 def test_square_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step):
     batch, _, height, width = frame['tgt'].shape 
@@ -246,6 +271,8 @@ def test_square_patch(samples, frame, layers, patch_config, thresh_list, gt_devi
         loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
         loss_patch = 0.15 * l1_loss_patch + 0.85 * dssim # [B, 1, N]
 
+        if run_single_image and np.abs(eps) < 1e-3:
+            show_loss_map(samples_xy, loss_point, loss_patch, "Square Loss")
         for tid, (clip_min, clip_max) in enumerate(thresh_list):
             # [B, 1, N], scalar
             clipped_loss_point, n_point = clip_percentage(loss_point, clip_min, clip_max)
@@ -256,24 +283,30 @@ def test_square_patch(samples, frame, layers, patch_config, thresh_list, gt_devi
             loss_tensor_patch[:, eps_idx, tid] = clipped_loss_patch.sum(dim=-1) / n_patch
 
             # show figure
-            if run_single_image:
-                fig = plt.figure(figsize=(15, 10))
-                ax1 = fig.add_subplot(121)
-                ax1.imshow(clipped_loss_point)
-                ax1.set_title('Clipped Loss Point for ({}, {})'.format(c_min, c_max))
-                ax1.axis('off')
-                ax2 = fig.add_subplot(122)
-                ax2.imshow(clipped_loss_patch)
-                ax2.set_title('Clipped Loss Patch for ({}, {})'.format(c_min, c_max))
-                ax2.axis('off')
-                plt.show()
+            #if run_single_image and np.abs(eps) < 1e-3:
+                #show_loss_map(samples_xy, clipped_loss_point, clipped_loss_patch, "Clipped Square Loss ({}%, {}%)".format(clip_min, clip_max))
 
     # create curve
     ret_curve_pts, ret_curve_patch = dict(), dict()
     for tid, (c_min, c_max) in enumerate(thresh_list):
         ret_curve_pts[(patch_config, (c_min, c_max))] = loss_tensor_point[0, :, tid].cpu().numpy()
         ret_curve_patch[(patch_config, (c_min, c_max))] = loss_tensor_patch[0, :, tid].cpu().numpy()
-
+    
+    if run_single_image:
+        fig = plt.figure(figsize=(20, 10))
+        ax1 = fig.add_subplot(121)
+        ax2 = fig.add_subplot(122)
+        
+        for tid, (c_min, c_max) in enumerate(thresh_list):
+            ax1.plot(eps_lst, ret_curve_pts[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
+            ax2.plot(eps_lst, ret_curve_patch[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
+        
+        ax1.legend()
+        ax2.legend()
+        ax1.set_title('Square Patch (Points)')
+        ax2.set_title('Square Patch (Patch)')
+        plt.show()
+            
     return (ret_curve_pts, ret_curve_patch)
         
 def test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step):
@@ -299,7 +332,7 @@ def test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_devi
     for eps_idx, eps in enumerate(eps_lst):
         depth = gt_depth + eps
         cam_points = layers['backproject_depth'](depth, inv_K)
-
+        
         # generate source patches by warping with the largest patch size
         # shape [1, 3, n_samples, patch_size, patch_size]
         src_patches, src_coords = sampled_patch_center_loss(
@@ -315,12 +348,15 @@ def test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_devi
                                     dilation=dilation)
         
         # compute loss
+        ofs = get_ofs(patch_size, dilation=1)
         l1_loss_patch = torch.abs(tgt_patches - src_patches).mean(1, True) # [B, 1, n_samples, patch_size, patch_size]
         l1_loss_point= l1_loss_patch[:, :, :, ofs, ofs] # [B, 1, n_samples]
         dssim = ssim_patch_sampled_pts(tgt_patches, src_patches)
         loss_point = 0.15 * l1_loss_point + 0.85 * dssim # [B, 1, N]
         loss_patch = 0.15 * l1_loss_patch.mean(dim=(3, 4)) + 0.85 * dssim # [B, 1, N]
-            
+        
+        if run_single_image and np.abs(eps) < 1e-3:
+            show_loss_map(samples_xy, loss_point, loss_patch, "Deform Loss")
         for tid, (clip_min, clip_max) in enumerate(thresh_list):
             clipped_loss_point, n_point = clip_percentage(loss_point, clip_min, clip_max)
             clipped_loss_patch, n_patch = clip_percentage(loss_patch, clip_min, clip_max)
@@ -330,23 +366,29 @@ def test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_devi
             loss_tensor_patch[:, eps_idx, tid] = clipped_loss_patch.sum(dim=-1) / n_patch
 
             # show figure
-            if run_single_image:
-                fig = plt.figure(figsize=(15, 10))
-                ax1 = fig.add_subplot(121)
-                ax1.imshow(clipped_loss_point)
-                ax1.set_title('Clipped Loss Point for ({}, {})'.format(c_min, c_max))
-                ax1.axis('off')
-                ax2 = fig.add_subplot(122)
-                ax2.imshow(clipped_loss_patch)
-                ax2.set_title('Clipped Loss Patch for ({}, {})'.format(c_min, c_max))
-                ax2.axis('off')
-                plt.show()
+            #if run_single_image and np.abs(eps) < 1e-3:
+                #show_loss_map(samples_xy, clipped_loss_point, clipped_loss_patch, "Clipped Deformed Loss ({}%, {}%)".format(clip_min, clip_max))
 
     # create curve
     ret_curve_pts, ret_curve_patch = dict(), dict()
     for tid, (c_min, c_max) in enumerate(thresh_list):
         ret_curve_pts[(patch_config, (c_min, c_max))] = loss_tensor_point[0, :, tid].cpu().numpy()
         ret_curve_patch[(patch_config, (c_min, c_max))] = loss_tensor_patch[0, :, tid].cpu().numpy()
+
+    if run_single_image:
+        fig = plt.figure(figsize=(20, 10))
+        ax1 = fig.add_subplot(121)
+        ax2 = fig.add_subplot(122)
+        
+        for tid, (c_min, c_max) in enumerate(thresh_list):
+            ax1.plot(eps_lst, ret_curve_pts[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
+            ax2.plot(eps_lst, ret_curve_patch[(patch_config, (c_min, c_max))], label='{}, {}'.format(c_min, c_max))
+        
+        ax1.legend()
+        ax2.legend()
+        ax1.set_title('Deform Patch (Points)')
+        ax2.set_title('Deform Patch (Patch)')
+        plt.show()
 
     return (ret_curve_pts, ret_curve_patch)
 
@@ -392,8 +434,7 @@ def dump_result(frame_t, r_curve, dump_root, type_name):
     record_dict['{}_curve_pt'.format(type_name)] = r_curve[0]
     record_dict['{}_curve_patch'.format(type_name)] = r_curve[1]
     
-    np.save(file_path, record_dict)
-
+    np.save(file_path, record_dict)   
 
 if __name__ == '__main__':
     global run_single_image

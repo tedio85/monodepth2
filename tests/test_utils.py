@@ -263,15 +263,16 @@ def sampled_patch_center_loss(samples, tgt_img, src_img,
     cam_coords = cam_coords / pred_depth # [B, 3, H, W]
 
     # unfold cam_coords at sampled locations
-    patch_coords = []
-    dil = dilation
-    for y, x in samples:
-        if ofs>=0:
-            coords = cam_coords[:, :, y-ofs:y+ofs+1:dil, x-ofs:x+ofs+1:dil] # [B, 3, patch_size, patch_size]
-            coords = coords.contiguous().view(batch, 3, -1) # [B, 3, patch_size*patch_size]
-            patch_coords.append(coords)
-    patch_coords = torch.stack(patch_coords, dim=-1) # [B, 3, patch_size*patch_size, n_samples]
-    patch_coords = patch_coords.permute(0, 3, 2, 1) # [B, n_samples, patch_size* patch_size, 3]
+    samples_xy = torch.ones_like(samples)
+    samples_xy[:, 0], samples_xy[:, 1] = samples[:, 1], samples[:, 0]
+    mesh = form_meshgrid(samples_xy, patch_size, dilation=dilation).to(torch.float) # [B, n_samples, patch_size*patch_size, 2] 
+
+    mesh[..., 0] /= (width - 1)
+    mesh[..., 1] /= (height - 1)
+    mesh = (mesh - 0.5) * 2
+
+    patch_coords = F.grid_sample(cam_coords, mesh, mode='nearest', padding_mode='border') # [B, 3, n_samples, patch_size*patch_size]
+    patch_coords = patch_coords.permute(0, 2, 3, 1) # [B, n_samples, patch_size* patch_size, 3]
     patch_coords = patch_coords.unsqueeze(-1) # [B, n_samples, patch_size*patch_size, 3, 1]
         
 
