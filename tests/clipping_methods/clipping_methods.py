@@ -420,7 +420,7 @@ def run_test(frame_t,
                 dump_result(frame_t, r_square_curve, root['dump'], 'square')
 
         if type_name == 'deform' or type_name == 'both':
-            r_deform_min, r_deform_curve = test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step)
+            r_deform_curve = test_deform_patch(samples, frame, layers, patch_config, thresh_list, gt_deviation, step)
             if not run_single_image:
                 dump_result(frame_t, r_deform_curve, root['dump'], 'deform')
     return 
