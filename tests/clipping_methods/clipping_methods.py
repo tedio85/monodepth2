@@ -441,7 +441,7 @@ def dump_result(frame_t, r_curve, dump_root, type_name):
 
 if __name__ == '__main__':
     global run_single_image
-    run_single_image = True
+    run_single_image = False
     list_path = "/viscompfs/users/sawang/ScanNet/analyze_list_new.txt"
     root = dict()
     root['data'] = "/viscompfs/users/sawang/ScanNet/data_motion_range"
