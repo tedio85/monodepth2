@@ -49,7 +49,7 @@ class DepthDecoder(nn.Module):
 
     def forward(self, input_features):
         self.outputs = {}
-        self.decoder_features = []
+        self.decoder_features = [0] * len(self.scales)
 
         # decoder
         x = input_features[-1]
