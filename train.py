@@ -8,6 +8,8 @@ from __future__ import absolute_import, division, print_function
 
 import random
 import numpy as np
+import torch
+
 from trainer import Trainer
 from options import MonodepthOptions
 
@@ -21,6 +23,6 @@ if __name__ == "__main__":
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    
+
     trainer = Trainer(opts)
     trainer.train()
