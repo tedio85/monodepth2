@@ -228,22 +228,21 @@ class Trainer:
         for key, ipt in inputs.items():
             inputs[key] = ipt.to(self.device)
 
-        if self.opt.pose_model_type == "shared":
-            # If we are using a shared encoder for both depth and pose (as advocated
-            # in monodepthv1), then all images are fed separately through the depth encoder.
-            all_color_aug = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids])
-            all_features = self.models["encoder"](all_color_aug)
-            all_features = [torch.split(f, self.opt.batch_size) for f in all_features]
+        # NOTE: only consider the case of separate pose and depth encoders
+        # Otherwise, we only feed the image with frame_id 0 through the depth encoder
+        features = self.models["encoder"](inputs["color_aug", 0, 0])
+        outputs, target_features = self.models["depth"](features)
+        
+        # extract target features
+        for s in self.opt.scales:
+            outputs[("feat", 0, s)] = target_features[s]
 
-            features = {}
-            for i, k in enumerate(self.opt.frame_ids):
-                features[k] = [f[i] for f in all_features]
-
-            outputs = self.models["depth"](features[0])
-        else:
-            # Otherwise, we only feed the image with frame_id 0 through the depth encoder
-            features = self.models["encoder"](inputs["color_aug", 0, 0])
-            outputs = self.models["depth"](features)
+        # use source features 
+        for i in self.opt.frame_ids[1:]:
+            src_feat = self.models["encoder"](inputs[("color_aug", i, 0)]) # encoder
+            src_output, src_features = self.models["depth"](src_feat)
+            for s in self.opt.scales:
+                outputs[("feat", i, s)] = src_features[s]
 
         if self.opt.predictive_mask:
             outputs["predictive_mask"] = self.models["predictive_mask"](features)
@@ -383,6 +382,13 @@ class Trainer:
                     outputs[("sample", frame_id, scale)],
                     padding_mode="border")
 
+                # NOTE: feature warping uses v1_multiscale 
+                # therefore, uses the variable `scale` instead of `source_scale`
+                outputs[("syn_feat", frame_id, scale)] = F.grid_sample(
+                    outputs[("feat", frame_id, scale)],
+                    outputs[("sample", frame_id, scale)],
+                    padding_mode="border")
+
                 if not self.opt.disable_automasking:
                     outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
@@ -400,6 +406,10 @@ class Trainer:
             reprojection_loss = 0.85 * ssim_loss + 0.15 * l1_loss
 
         return reprojection_loss
+
+    def compute_feature_loss(self, pred_feat, target_feat):
+        abs_diff = torch.abs(target_feat - pred_feat)
+        return abs_diff.mean()
 
     def compute_losses(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch
@@ -477,13 +487,25 @@ class Trainer:
             if not self.opt.disable_automasking:
                 outputs["identity_selection/{}".format(scale)] = (idxs > 1).float()
 
-            loss += to_optimise.mean()
+            pixel_loss = to_optimise.mean()
+            loss += pixel_loss
+            losses["pixel_loss/scale{}".format(scale)] = pixel_loss
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
             loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
+            losses["smooth/scale{}".format(scale)] = smooth_loss
+
+            # feature loss
+            for frame_id in self.opt.frame_ids[1:]:
+                feat_loss = compute_feature_loss(
+                                outputs[("syn_feat", frame_id, scale)],
+                                outputs[("feat", 0, scale)])
+                loss += self.opt.feature_weight * feat_loss # TODO: / (2 ** scale) ??
+                losses["feat_loss/img{}/scale{}".format(frame_id, scale)] = feat_loss
+
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
 

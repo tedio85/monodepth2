@@ -61,6 +61,10 @@ class MonodepthOptions:
                                  type=float,
                                  help="disparity smoothness weight",
                                  default=1e-3)
+        self.parser.add_argument("--feature_weight",
+                                 type=float,
+                                 help="feature loss weight",
+                                 default=0.1)
         self.parser.add_argument("--scales",
                                  nargs="+",
                                  type=int,
