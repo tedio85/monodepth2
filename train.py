@@ -6,6 +6,8 @@
 
 from __future__ import absolute_import, division, print_function
 
+import random
+import numpy as np
 from trainer import Trainer
 from options import MonodepthOptions
 
@@ -14,5 +16,11 @@ opts = options.parse()
 
 
 if __name__ == "__main__":
+    seed = 732
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    
     trainer = Trainer(opts)
     trainer.train()

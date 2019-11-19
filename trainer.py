@@ -15,6 +15,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
 
+import subprocess
 import json
 
 from utils import *
@@ -599,6 +600,9 @@ class Trainer:
 
         with open(os.path.join(models_dir, 'opt.json'), 'w') as f:
             json.dump(to_save, f, indent=2)
+
+        cmd = "cp *.py {}".format(models_dir)
+        subprocess.run(cmd, shell=True)
 
     def save_model(self):
         """Save model weights to disk
