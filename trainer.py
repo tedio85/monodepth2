@@ -423,10 +423,11 @@ class Trainer:
             loss = 0
             reprojection_losses = []
 
-            if self.opt.v1_multiscale:
-                source_scale = scale
-            else:
-                source_scale = 0
+            # NOTE: use v1_multiscale
+            #if self.opt.v1_multiscale:
+            source_scale = scale
+            #else:
+                #source_scale = 0
 
             disp = outputs[("disp", scale)]
             color = inputs[("color", 0, scale)]
