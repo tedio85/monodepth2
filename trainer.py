@@ -341,12 +341,13 @@ class Trainer:
         """
         for scale in self.opt.scales:
             disp = outputs[("disp", scale)]
-            if self.opt.v1_multiscale:
-                source_scale = scale
-            else:
-                disp = F.interpolate(
-                    disp, [self.opt.height, self.opt.width], mode="bilinear", align_corners=False)
-                source_scale = 0
+            # NOTE: use v1_multiscale 
+            # if self.opt.v1_multiscale:
+            source_scale = scale
+            # else:
+            #     disp = F.interpolate(
+            #         disp, [self.opt.height, self.opt.width], mode="bilinear", align_corners=False)
+            #     source_scale = 0
 
             _, depth = disp_to_depth(disp, self.opt.min_depth, self.opt.max_depth)
 
