@@ -501,9 +501,9 @@ class Trainer:
 
             # feature loss
             for frame_id in self.opt.frame_ids[1:]:
-                feat_loss = compute_feature_loss(
-                                outputs[("syn_feat", frame_id, scale)],
-                                outputs[("feat", 0, scale)])
+                feat_loss = self.compute_feature_loss(
+                                    outputs[("syn_feat", frame_id, scale)],
+                                    outputs[("feat", 0, scale)])
                 loss += self.opt.feature_weight * feat_loss # TODO: / (2 ** scale) ??
                 losses["feat_loss/img{}/scale{}".format(frame_id, scale)] = feat_loss
 
