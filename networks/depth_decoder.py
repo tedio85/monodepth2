@@ -61,7 +61,7 @@ class DepthDecoder(nn.Module):
             x = torch.cat(x, 1)
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
-                self.decoder_features[i] = x / x.mean() # divide by the feature's mean
+                self.decoder_features[i] = self.sigmoid(x) # sigmoid of feature
                 self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv", i)](x))
 
         return self.outputs, self.decoder_features
