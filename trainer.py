@@ -410,8 +410,12 @@ class Trainer:
         return reprojection_loss
 
     def compute_feature_loss(self, pred_feat, target_feat):
-        abs_diff = torch.abs(target_feat - pred_feat)
-        return abs_diff.mean()
+        # NOTE: KL-div takes log probability for the 1st argument
+        # https://stackoverflow.com/questions/49886369/kl-divergence-for-two-probability-distributions-in-pytorch?rq=1
+        pred = F.softmax(pred_feat, dim=1)
+        target = F.softmax(target_feat, dim=1)
+        loss = F.kl_div(target.log(), pred, None, None, 'batchmean')
+        return loss
 
     def compute_losses(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch
