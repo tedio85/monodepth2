@@ -412,8 +412,9 @@ class Trainer:
     def compute_feature_loss(self, pred_feat, target_feat):
         # NOTE: KL-div takes log probability for the 1st argument
         # https://stackoverflow.com/questions/49886369/kl-divergence-for-two-probability-distributions-in-pytorch?rq=1
-        pred = F.softmax(pred_feat, dim=1)
-        target = F.softmax(target_feat, dim=1)
+        # add small number to prevent division by zero
+        pred = F.softmax(pred_feat, dim=1) + 1e-8
+        target = F.softmax(target_feat, dim=1) + 1e-8 
         loss = F.kl_div(target.log(), pred, None, None, 'batchmean')
         return loss
 
