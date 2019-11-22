@@ -252,7 +252,7 @@ class Trainer:
                 outputs[("feat", i, s)] = src_features[s]
 
         # get reconstructed RGB image
-        rbg_outputs, rgb_features = self.models["rgb"](features)
+        rgb_outputs, rgb_features = self.models["rgb"](features)
         outputs.update(rgb_outputs)
 
         if self.opt.predictive_mask:
