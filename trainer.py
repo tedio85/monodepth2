@@ -599,7 +599,7 @@ class Trainer:
 
                 writer.add_image(
                     "recon_rgb{}/{}".format(s, j),
-                    outputs[("rgb_recon", i)].data, self.step)
+                    outputs[("rgb_recon", s)].data, self.step)
                 writer.add_image(
                     "disp_{}/{}".format(s, j),
                     normalize_image(outputs[("disp", s)][j]), self.step)
