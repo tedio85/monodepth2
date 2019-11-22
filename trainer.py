@@ -62,6 +62,12 @@ class Trainer:
         self.models["depth"].to(self.device)
         self.parameters_to_train += list(self.models["depth"].parameters())
 
+        # RGB decoder
+        self.models["rgb"] = networks.RGBDecoder(
+            self.models["encoder"].num_ch_enc, self.opt.scales, num_output_channels=3)
+        self.models["rgb"].to(self.device)
+        self.parameters_to_train += list(self.models["rgb"].parameters())
+
         if self.use_pose_net:
             if self.opt.pose_model_type == "separate_resnet":
                 self.models["pose_encoder"] = networks.ResnetEncoder(
@@ -245,6 +251,10 @@ class Trainer:
             for s in self.opt.scales:
                 outputs[("feat", i, s)] = src_features[s]
 
+        # get reconstructed RGB image
+        rbg_outputs, rgb_features = self.models["rgb"](features)
+        outputs.update(rgb_outputs)
+
         if self.opt.predictive_mask:
             outputs["predictive_mask"] = self.models["predictive_mask"](features)
 
@@ -413,6 +423,10 @@ class Trainer:
         abs_diff = torch.abs(target_feat - pred_feat)
         return abs_diff.mean()
 
+    def compute_reconstruction_loss(self, pred, target):
+        abs_diff = torch.abs(target - pred)
+        return abs_diff.mean()
+
     def compute_losses(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch
         """
@@ -497,7 +511,6 @@ class Trainer:
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
-
             loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
             losses["smooth/scale{}".format(scale)] = smooth_loss
 
@@ -509,6 +522,14 @@ class Trainer:
                 loss += self.opt.feature_weight * feat_loss # TODO: / (2 ** scale) ??
                 losses["feat_loss/img{}/scale{}".format(frame_id, scale)] = feat_loss
 
+            # RGB reconstruction loss
+            recon_loss = self.compute_reconstruction_loss(
+                outputs[("rgb_recon", scale)]
+                inputs[("color", 0, scale)])
+            loss += self.opt.recon_weight * recon_loss
+            losses["recon_loss/scale{}".format(scale)] = recon_loss
+
+            # aggregate loss
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
 
