@@ -65,6 +65,10 @@ class MonodepthOptions:
                                  type=float,
                                  help="feature loss weight",
                                  default=0.1)
+        self.parser.add_argument("--recon_weight",
+                                 type=float,
+                                 help="RGB reconstruction loss weight",
+                                 default=1.0)
         self.parser.add_argument("--scales",
                                  nargs="+",
                                  type=int,
