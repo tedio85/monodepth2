@@ -524,7 +524,7 @@ class Trainer:
 
             # RGB reconstruction loss
             recon_loss = self.compute_reconstruction_loss(
-                outputs[("rgb_recon", scale)]
+                outputs[("rgb_recon", scale)],
                 inputs[("color", 0, scale)])
             loss += self.opt.recon_weight * recon_loss
             losses["recon_loss/scale{}".format(scale)] = recon_loss
