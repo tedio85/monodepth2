@@ -410,8 +410,9 @@ class Trainer:
         return reprojection_loss
 
     def compute_feature_loss(self, pred_feat, target_feat):
-        abs_diff = torch.abs(target_feat - pred_feat)
-        return abs_diff.mean()
+        cos_sim = F.cosine_similarity(pred_feat, target_feat, dim=1)
+        abs_sim = torch.abs(cos_sim)
+        return abs_sim.mean()
 
     def compute_losses(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch
