@@ -82,6 +82,9 @@ class MonodepthOptions:
                                  type=int,
                                  help="frames to load",
                                  default=[0, -1, 1])
+        self.parser.add_argument("--disable_data_aug",
+                                 help="if set, doesn't perform data augmentation in data loader",
+                                 action="store_true")
 
         # OPTIMIZATION options
         self.parser.add_argument("--batch_size",
