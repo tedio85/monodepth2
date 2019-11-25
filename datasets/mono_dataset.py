@@ -45,8 +45,10 @@ class MonoDataset(data.Dataset):
                  width,
                  frame_idxs,
                  num_scales,
+                 load_gt_depth=False,
                  is_train=False,
-                 img_ext='.jpg'):
+                 img_ext='.jpg',
+                 data_aug=True):
         super(MonoDataset, self).__init__()
 
         self.data_path = data_path
@@ -55,11 +57,13 @@ class MonoDataset(data.Dataset):
         self.width = width
         self.num_scales = num_scales
         self.interp = Image.ANTIALIAS
+        self.load_gt_depth = load_gt_depth
 
         self.frame_idxs = frame_idxs
 
         self.is_train = is_train
         self.img_ext = img_ext
+        self.data_aug=data_aug
 
         self.loader = pil_loader
         self.to_tensor = transforms.ToTensor()
@@ -85,7 +89,7 @@ class MonoDataset(data.Dataset):
             self.resize[i] = transforms.Resize((self.height // s, self.width // s),
                                                interpolation=self.interp)
 
-        self.load_depth = self.check_depth()
+        self.load_depth = self.load_gt_depth and self.check_depth()
 
     def preprocess(self, inputs, color_aug):
         """Resize colour images to the required scales and augment if required
@@ -184,7 +188,7 @@ class MonoDataset(data.Dataset):
             del inputs[("color", i, -1)]
             del inputs[("color_aug", i, -1)]
 
-        if self.load_depth:
+        if self.load_gt_depth and self.load_depth:
             depth_gt = self.get_depth(folder, frame_index, side, do_flip)
             inputs["depth_gt"] = np.expand_dims(depth_gt, 0)
             inputs["depth_gt"] = torch.from_numpy(inputs["depth_gt"].astype(np.float32))

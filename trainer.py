@@ -107,12 +107,16 @@ class Trainer:
         print("Models and tensorboard events files are saved to:\n  ", self.opt.log_dir)
         print("Training is using:\n  ", self.device)
 
-        # data
-        datasets_dict = {"kitti": datasets.KITTIRAWDataset,
+        #### Data Loader
+        datasets_dict = {"scannet_proc": datasets.ScanNetProcDataset,
+                         "kitti": datasets.KITTIProcDataset,
                          "kitti_odom": datasets.KITTIOdomDataset}
         self.dataset = datasets_dict[self.opt.dataset]
 
-        fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")
+        if self.opt.dataset.startswith("scannet"):
+            fpath = os.path.join(self.opt.data_path, '{}.txt')
+        else:
+            fpath = os.path.join(self.opt.data_path, "{}.txt")
 
         train_filenames = readlines(fpath.format("train"))
         val_filenames = readlines(fpath.format("val"))
@@ -123,13 +127,21 @@ class Trainer:
 
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
+            self.opt.frame_ids, 4, load_gt_depth=False, is_train=True, img_ext=img_ext, data_aug=not self.opt.disable_data_aug)
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
-        val_dataset = self.dataset(
-            self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
+
+        if self.opt.dataset.startswith("scannet"):
+            val_dataset = datasets.ScanNetProcDataset(
+                self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
+                self.opt.frame_ids, 4, is_train=False, # set is_train to false 
+                gt_path=self.opt.dmap_path,            # provide gt_path
+                img_ext=img_ext)
+        else:
+            val_dataset = self.dataset(
+                self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
+                self.opt.frame_ids, 4, load_gt_depth=True, is_train=False, gt_path=self.opt.dmap_path, img_ext=img_ext)
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
