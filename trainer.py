@@ -399,6 +399,7 @@ class Trainer:
                 outputs[("syn_feat", frame_id, scale)] = F.grid_sample(
                     outputs[("feat", frame_id, scale)],
                     outputs[("sample", frame_id, scale)],
+                    mode="nearest",
                     padding_mode="border")
 
                 if not self.opt.disable_automasking:
