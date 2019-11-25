@@ -10,6 +10,10 @@ import hashlib
 import zipfile
 from six.moves import urllib
 
+import numpy as np
+import torch
+import torch.nn.functional as F
+
 
 def readlines(filename):
     """Read all the lines in a text file and return as a list
@@ -112,3 +116,39 @@ def download_model_if_doesnt_exist(model_name):
             f.extractall(model_path)
 
         print("   Model unzipped to {}".format(model_path))
+
+
+def get_crop_mask(output_width, output_height, scales, gamma=0.99):
+    masks, m_weight = [], []
+    m_width = np.random.randint(10, output_width//2) # up to 1/4 output width
+    m_height = np.random.randint(10, output_height//2) # up to 1/4 output height
+    upper = np.random.randint(output_height - m_height)
+    left = np.random.randint(output_width - m_width)
+
+    # create mask for scale 0, shape [1, 1, H, W]
+    mask0 = torch.cuda.FloatTensor(1, 1, output_height, output_width).fill_(1)
+    mask0[:, :, upper:upper+m_height, left:left+m_width] = 0
+
+    # create weight for scale 0, shape [1, 1, H, W]
+    yv, xv = torch.meshgrid([torch.arange(0, output_height), torch.arange(0, output_width)])
+    xv = xv.unsqueeze(0).unsqueeze(0) # [1, 1, H, W]
+    yv = yv.unsqueeze(0).unsqueeze(0) # [1, 1, H, W]
+    d_list = [
+        torch.abs(xv - left),
+        torch.abs(xv - (left + m_width)),
+        torch.abs(yv - upper),
+        torch.abs(yv - (upper + m_height))
+    ]
+    dists = torch.cat(d_list, dim=1)
+    weight0, _ = torch.min(dists, dim=1, keepdim=True)
+    weight0 = weight0.float().cuda()
+    weight0 = (1 - mask0) * (gamma ** weight0)
+
+    for s in scales:
+        h, w = output_height//(2 ** s), output_width//(2**s)
+        m = F.interpolate(mask0, [h, w], mode="nearest")
+        w = F.interpolate(weight0, [h, w], mode="nearest")
+        masks.append(m)
+        m_weight.append(w)
+    
+    return masks, m_weight
