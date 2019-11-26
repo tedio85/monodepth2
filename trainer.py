@@ -398,10 +398,11 @@ class Trainer:
 
                 # NOTE: feature warping uses v1_multiscale 
                 # therefore, uses the variable `scale` instead of `source_scale`
-                outputs[("syn_feat", frame_id, scale)] = F.grid_sample(
-                    outputs[("feat", frame_id, scale)],
-                    outputs[("sample", frame_id, scale)],
-                    padding_mode="border")
+                if scale == 0:
+                    outputs[("syn_feat", frame_id, scale)] = F.grid_sample(
+                        outputs[("feat", frame_id, scale)],
+                        outputs[("sample", frame_id, scale)],
+                        padding_mode="border")
 
                 if not self.opt.disable_automasking:
                     outputs[("color_identity", frame_id, scale)] = \
@@ -514,12 +515,13 @@ class Trainer:
             losses["smooth/scale{}".format(scale)] = smooth_loss
 
             # feature loss
-            for frame_id in self.opt.frame_ids[1:]:
-                feat_loss = self.compute_feature_loss(
-                                    outputs[("syn_feat", frame_id, scale)],
-                                    outputs[("feat", 0, scale)])
-                loss += self.opt.feature_weight * feat_loss # TODO: / (2 ** scale) ??
-                losses["feat_loss/img{}/scale{}".format(frame_id, scale)] = feat_loss
+            if scale == 0:
+                for frame_id in self.opt.frame_ids[1:]:
+                    feat_loss = self.compute_feature_loss(
+                                        outputs[("syn_feat", frame_id, scale)],
+                                        outputs[("feat", 0, scale)])
+                    loss += self.opt.feature_weight * feat_loss # TODO: / (2 ** scale) ??
+                    losses["feat_loss/img{}/scale{}".format(frame_id, scale)] = feat_loss
 
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
