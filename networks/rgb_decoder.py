@@ -19,7 +19,7 @@ class RGBDecoder(DepthDecoder):
     def __init__(self, num_ch_enc, scales=range(4), num_output_channels=3, use_skips=True):
         super(RGBDecoder, self).__init__(num_ch_enc, scales, num_output_channels, use_skips)
 
-    def forward(self, input_features):
+    def forward(self, input_features, feat_mask):
         self.outputs = {}
         self.decoder_features = [0] * len(self.scales)
 
@@ -33,7 +33,7 @@ class RGBDecoder(DepthDecoder):
             x = torch.cat(x, 1)
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
-                self.decoder_features[i] = x # sigmoid of feature
+                self.decoder_features[i] = x 
                 self.outputs[("rgb_recon", i)] = self.sigmoid(self.convs[("dispconv", i)](x))
 
         return self.outputs, self.decoder_features

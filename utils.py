@@ -120,8 +120,8 @@ def download_model_if_doesnt_exist(model_name):
 
 def get_crop_mask(output_width, output_height, scales, gamma=0.99):
     masks, m_weight = [], []
-    m_width = np.random.randint(10, output_width//2) # up to 1/4 output width
-    m_height = np.random.randint(10, output_height//2) # up to 1/4 output height
+    rand = np.random.randint(output_height//4, output_height//2) # up to 1/2 output height
+    m_width, m_height = rand, rand
     upper = np.random.randint(output_height - m_height)
     left = np.random.randint(output_width - m_width)
 
