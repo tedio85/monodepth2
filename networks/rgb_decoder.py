@@ -31,6 +31,7 @@ class RGBDecoder(DepthDecoder):
             if self.use_skips and i > 0:
                 x += [input_features[i - 1]]
             x = torch.cat(x, 1)
+            x = x * feat_mask[i] # mask regions with binary mask
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
                 self.decoder_features[i] = x 

@@ -252,8 +252,11 @@ class Trainer:
                 outputs[("feat", i, s)] = src_features[s]
 
         # get reconstructed RGB image
-        rgb_outputs, rgb_features = self.models["rgb"](features)
+        feat_masks, recon_weights = get_crop_mask(self.opt.width, self.opt.height, self.opt.scales)
+        rgb_outputs, rgb_features = self.models["rgb"](features, feat_masks)
         outputs.update(rgb_outputs)
+        outputs["feat_mask_list"] = feat_masks
+        outputs["rgb_weight_list"] = recon_weights
 
         if self.opt.predictive_mask:
             outputs["predictive_mask"] = self.models["predictive_mask"](features)
@@ -423,9 +426,11 @@ class Trainer:
         abs_diff = torch.abs(target_feat - pred_feat)
         return abs_diff.mean()
 
-    def compute_reconstruction_loss(self, pred, target):
+    def compute_reconstruction_loss(self, pred, target, recon_weight):
+        # compute reconstruction loss only at regions where features are masked
         abs_diff = torch.abs(target - pred)
-        return abs_diff.mean()
+        window_diff = abs_diff * recon_weight
+        return window_diff.mean()
 
     def compute_losses(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch
@@ -525,7 +530,8 @@ class Trainer:
             # RGB reconstruction loss
             recon_loss = self.compute_reconstruction_loss(
                 outputs[("rgb_recon", scale)],
-                inputs[("color", 0, scale)])
+                inputs[("color", 0, scale)],
+                outputs["rgb_weight_list"][scale])
             loss += self.opt.recon_weight * recon_loss
             losses["recon_loss/scale{}".format(scale)] = recon_loss
 
@@ -600,6 +606,9 @@ class Trainer:
                 writer.add_image(
                     "recon_rgb{}/{}".format(s, j),
                     outputs[("rgb_recon", s)][j].data, self.step)
+                writer.add_image(
+                    "recon_rgb_partial{}/{}".format(s, j),
+                    (outputs[("rgb_recon", s)][j] * (1-outputs["feat_mask_list"][s])).data, self.step)
                 writer.add_image(
                     "disp_{}/{}".format(s, j),
                     normalize_image(outputs[("disp", s)][j]), self.step)
