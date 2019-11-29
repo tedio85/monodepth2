@@ -27,15 +27,18 @@ class RGBDecoder(DepthDecoder):
         x = input_features[-1]
         for i in range(4, -1, -1):
             x = self.convs[("upconv", i, 0)](x)
-            x = [upsample(x)]
+            
+            # omit global information upsampled from decoder's (i-1)th layer
+            # expect local information from encoder's (i-1)th layer to capture more global information
+            # mask regions with binary mask
+            x = upsample(x)
+            if i in self.scales:
+                x = x * feat_mask[i] 
+            x = [x]
+
             if self.use_skips and i > 0:
                 x += [input_features[i - 1]]
             x = torch.cat(x, 1)
-
-            # mask regions with binary mask
-            if i in self.scales:
-                x = x * feat_mask[i] 
-            
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
                 self.decoder_features[i] = x 
