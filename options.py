@@ -21,6 +21,10 @@ class MonodepthOptions:
                                  type=str,
                                  help="path to the training data",
                                  default=os.path.join(file_dir, "kitti_data"))
+        self.parser.add_argument("--dmap_path",
+                                 type=str,
+                                 help="path to the ground truth depth map",
+                                 default="/viscompfs/users/tedyu/kitti_data/kitti")
         self.parser.add_argument("--log_dir",
                                  type=str,
                                  help="log directory",
@@ -90,6 +94,9 @@ class MonodepthOptions:
                                  type=int,
                                  help="frames to load",
                                  default=[0, -1, 1])
+        self.parser.add_argument("--disable_data_aug",
+                                 help="if set, doesn't perform data augmentation in data loader",
+                                 action="store_true")
 
         # OPTIMIZATION options
         self.parser.add_argument("--batch_size",
@@ -148,7 +155,7 @@ class MonodepthOptions:
         self.parser.add_argument("--num_workers",
                                  type=int,
                                  help="number of dataloader workers",
-                                 default=12)
+                                 default=8)
 
         # LOADING options
         self.parser.add_argument("--load_weights_folder",
