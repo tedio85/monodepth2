@@ -604,8 +604,9 @@ class Trainer:
         for l, v in losses.items():
             writer.add_scalar("{}".format(l), v, self.step)
 
-        for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
-            for s in self.opt.scales:
+        for s in self.opt.scales:
+            rgb_partial = outputs[("rgb_recon", s)] * (1-outputs["feat_mask_list"][s])
+            for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
                 for frame_id in self.opt.frame_ids:
                     writer.add_image(
                         "color_{}_{}/{}".format(frame_id, s, j),
@@ -620,7 +621,7 @@ class Trainer:
                     outputs[("rgb_recon", s)][j].data, self.step)
                 writer.add_image(
                     "recon_rgb_partial{}/{}".format(s, j),
-                    (outputs[("rgb_recon", s)][j] * (1-outputs["feat_mask_list"][s])).data, self.step)
+                    rgb_partial[j].data, self.step)
                 writer.add_image(
                     "disp_{}/{}".format(s, j),
                     normalize_image(outputs[("disp", s)][j]), self.step)
