@@ -32,7 +32,7 @@ class RGBDecoder(DepthDecoder):
             # expect local information from encoder's (i-1)th layer to capture more global information
             # mask regions with binary mask
             x = upsample(x)
-            if i in self.scales and i > 0:
+            if i == self.scales[-1]:
                 x = x * feat_mask[i] 
             x = [x]
 

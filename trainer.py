@@ -64,7 +64,7 @@ class Trainer:
 
         # RGB decoder
         self.models["rgb"] = networks.RGBDecoder(
-            self.models["encoder"].num_ch_enc, self.opt.scales, num_output_channels=3)
+            self.models["encoder"].num_ch_enc, self.opt.scales, num_output_channels=3, use_skips=False)
         self.models["rgb"].to(self.device)
         self.parameters_to_train += list(self.models["rgb"].parameters())
 
